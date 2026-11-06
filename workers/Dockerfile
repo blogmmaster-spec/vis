@@ -35,10 +35,13 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# int8 weight-only is a nice-to-have, never a build gate. torchao pins an exact torch
-# version, so a mismatch here must not fail the image — the worker falls back to bf16.
-RUN pip install torchao \
-    || echo "torchao unavailable; int8 disabled, worker will serve bf16"
+# torchao is deliberately NOT installed. It is the only way to get int8 weight-only, but its
+# releases pin an exact torch version, and a mismatched build installs cleanly and then breaks
+# `import diffusers` at runtime ("cannot import name 'ScalingType'"). A quantisation nicety is
+# not worth a fragile dependency: the worker serves bf16, which is ~13GB and fits 24GB fine.
+#
+# To enable int8 later, pin torchao to a release built for this exact torch version and keep
+# the import check below — it will catch an incompatible pair at build time.
 
 # Build-time import check. Everything above can succeed while the runtime is unusable —
 # a diffusers/torch mismatch only surfaces when the pipeline is imported, which at runtime
