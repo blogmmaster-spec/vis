@@ -1,0 +1,22 @@
+# torch/torchvision come from the base image — do not pin them here.
+#
+# diffusers must come from git: `Flux2KleinPipeline` post-dates the last PyPI release.
+diffusers @ git+https://github.com/huggingface/diffusers.git
+transformers>=4.44
+accelerate>=1.0
+safetensors
+huggingface_hub>=0.26
+pillow>=10.4
+numpy>=1.26
+runpod>=1.7
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# Post-generation stages (optional at runtime — the worker reports availability and skips
+# a stage that cannot run rather than substituting a fake result).
+spandrel>=0.4          # super-resolution model loading (Real-ESRGAN class)
+vtracer>=0.6           # raster → SVG tracing
+
+# int8 weight-only quantisation (IMOTAN_DTYPE=int8). Must match the torch build in the base
+# image; torchao 0.7.x pairs with torch 2.5.
+torchao>=0.7,<0.8
