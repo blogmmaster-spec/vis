@@ -11,7 +11,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "workers/image-worker/**"
+      - "workers/**"
       - ".github/workflows/image-worker.yml"
   workflow_dispatch:
 
@@ -47,7 +47,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: workers/image-worker
+          context: workers
           push: true
           build-args: |
             BAKE_WEIGHTS=0
