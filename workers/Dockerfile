@@ -8,9 +8,10 @@
 #                             the first worker in a data center downloads the weights into
 #                             it; later workers mount that cache. See README.
 #
-# torch 2.7, not 2.5: diffusers' current main uses `torch.accelerator`, added in torch 2.6.
-# PyTorch 2.7 ships cu126 builds, hence the CUDA line here.
-FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime
+# torch 2.8, not 2.5/2.7: diffusers needs `torch.accelerator` (torch >= 2.6) and, for int8,
+# torchao >= 0.15 — which targets torch >= 2.8. On torch 2.7 those two requirements cannot
+# both hold, so the base image has to be current.
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 
 ARG BAKE_WEIGHTS=1
 ARG HF_TOKEN=""
@@ -35,15 +36,14 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# int8 weight-only needs torchao, but torchao pins exact torch versions and a wrong one
-# installs cleanly and then breaks `import diffusers` ("cannot import name 'ScalingType'").
-# Rather than guess, try candidates newest-first and keep the first that leaves the runtime
-# importable. `--no-deps` stops pip from swapping torch underneath the base image. If none
-# work, the worker serves bf16 — correct, just more VRAM.
-RUN for v in 0.14.0 0.13.0 0.12.0 0.11.0 0.10.0 0.9.0 ; do \
+# int8 weight-only needs torchao. Two traps: a wrong torchao installs cleanly and then breaks
+# `import diffusers`, and diffusers only enforces its `torchao >= 0.15` floor when the config is
+# *constructed* — so an import-only check passes with a version that is too old.
+# The check below therefore builds the real config. `--no-deps` stops pip replacing torch.
+RUN for v in 0.17.0 0.16.0 0.15.0 ; do \
         echo "torchao: trying $v" ; \
         if pip install --no-deps "torchao==$v" >/dev/null 2>&1 \
-           && python -c "import torchao, diffusers; from diffusers import Flux2KleinPipeline" >/dev/null 2>&1 ; then \
+           && python -c "import torchao; from diffusers import TorchAoConfig; TorchAoConfig('int8_weight_only')" >/dev/null 2>&1 ; then \
             echo "torchao: $v works" ; break ; \
         fi ; \
         pip uninstall -y torchao >/dev/null 2>&1 || true ; \
