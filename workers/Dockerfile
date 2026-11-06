@@ -8,7 +8,9 @@
 #                             the first worker in a data center downloads the weights into
 #                             it; later workers mount that cache. See README.
 #
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# torch 2.7, not 2.5: diffusers' current main uses `torch.accelerator`, added in torch 2.6.
+# PyTorch 2.7 ships cu126 builds, hence the CUDA line here.
+FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime
 
 ARG BAKE_WEIGHTS=1
 ARG HF_TOKEN=""
@@ -37,6 +39,15 @@ RUN pip install --upgrade pip \
 # version, so a mismatch here must not fail the image — the worker falls back to bf16.
 RUN pip install torchao \
     || echo "torchao unavailable; int8 disabled, worker will serve bf16"
+
+# Build-time import check. Everything above can succeed while the runtime is unusable —
+# a diffusers/torch mismatch only surfaces when the pipeline is imported, which at runtime
+# means a crash loop. Fail here instead, where the log is cheap to read.
+RUN python -c "\
+import torch, diffusers; \
+from diffusers import Flux2KleinPipeline; \
+print('torch', torch.__version__, '| diffusers', diffusers.__version__, '| cuda', torch.version.cuda); \
+assert hasattr(torch, 'accelerator'), 'torch too old for this diffusers'"
 
 COPY pipeline.py stages.py download_weights.py handler.py server.py ./
 
