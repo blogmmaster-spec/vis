@@ -23,8 +23,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# The `-runtime` image is minimal: no git, no curl. We need git for the diffusers
+# `git+https://` requirement and curl for the upscaler weights below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
 # int8 weight-only is a nice-to-have, never a build gate. torchao pins an exact torch
 # version, so a mismatch here must not fail the image — the worker falls back to bf16.
