@@ -119,25 +119,33 @@ a warm process to snapshot; without it every cold start pays the full load.
 
 ## Precision
 
-**The shipped image runs bf16.** `IMOTAN_DTYPE=int8` is wired up and supported, but `torchao`
-— the only way to get int8 weight-only — is deliberately *not* installed: its releases pin an
-exact torch version, and a mismatched build installs cleanly then breaks `import diffusers`
-(`cannot import name 'ScalingType'`). The handler falls back to bf16 and reports what it
-actually loaded.
+The image **tries to enable int8 weight-only at build time and falls back to bf16** if it can't.
+
+`torchao` is the only way to get int8, and its releases pin exact torch versions — a wrong one
+installs cleanly and then breaks `import diffusers` (`cannot import name 'ScalingType'`). So the
+Dockerfile tries a list of torchao versions newest-first with `--no-deps`, keeping the first that
+leaves the runtime importable, and prints which one won:
+
+```
+torchao: 0.13.0 works
+torchao 0.13.0
+```
+
+If none work you'll see `torchao unavailable; worker will serve bf16` and the build still
+succeeds. `IMOTAN_DTYPE=bf16` forces the unquantised path even when torchao is present.
 
 | Value | Weight footprint | Notes |
 |---|---|---|
-| `bf16` (what ships) | ~8GB transformer, ~13GB pipeline | fits 24GB with room for best-of-2 + 2× upscale |
-| `int8` | ~4GB transformer | requires a version-matched `torchao` in the image |
+| `int8` (default when torchao is present) | ~4GB transformer | int8 weight-only via torchao |
+| `bf16` | ~8GB transformer, ~13GB pipeline | always works; fits 24GB with headroom |
 
-Why int8 and not fp8, when you do enable it: fp8 *compute* needs Ada or Hopper, so on a 3090 or
-A5000 it is emulated and slower than bf16. int8 weight-only dequantises inside the matmul, so
-bf16 compute is retained while half the weight bytes move — and diffusion at 1MP is
-bandwidth-bound, which is where that pays.
+Why int8 and not fp8: fp8 *compute* needs Ada or Hopper, so on a 3090 or A5000 it is emulated
+and slower than bf16. int8 weight-only dequantises inside the matmul, so bf16 compute is
+retained while half the weight bytes move — and diffusion at 1MP is bandwidth-bound, which is
+where that pays.
 
-Every response reports `imotan.precision` (`bf16` or `int8-wo`) so you can confirm from the
-output rather than trusting the env. The Dockerfile's build-time import check catches an
-incompatible torch/diffusers/torchao triple before the image ships.
+Every response reports `imotan.precision` (`int8-wo` or `bf16`) — read that rather than trusting
+the env, since it reflects what actually loaded.
 
 ---
 

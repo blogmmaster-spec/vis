@@ -35,13 +35,21 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# torchao is deliberately NOT installed. It is the only way to get int8 weight-only, but its
-# releases pin an exact torch version, and a mismatched build installs cleanly and then breaks
-# `import diffusers` at runtime ("cannot import name 'ScalingType'"). A quantisation nicety is
-# not worth a fragile dependency: the worker serves bf16, which is ~13GB and fits 24GB fine.
-#
-# To enable int8 later, pin torchao to a release built for this exact torch version and keep
-# the import check below — it will catch an incompatible pair at build time.
+# int8 weight-only needs torchao, but torchao pins exact torch versions and a wrong one
+# installs cleanly and then breaks `import diffusers` ("cannot import name 'ScalingType'").
+# Rather than guess, try candidates newest-first and keep the first that leaves the runtime
+# importable. `--no-deps` stops pip from swapping torch underneath the base image. If none
+# work, the worker serves bf16 — correct, just more VRAM.
+RUN for v in 0.14.0 0.13.0 0.12.0 0.11.0 0.10.0 0.9.0 ; do \
+        echo "torchao: trying $v" ; \
+        if pip install --no-deps "torchao==$v" >/dev/null 2>&1 \
+           && python -c "import torchao, diffusers; from diffusers import Flux2KleinPipeline" >/dev/null 2>&1 ; then \
+            echo "torchao: $v works" ; break ; \
+        fi ; \
+        pip uninstall -y torchao >/dev/null 2>&1 || true ; \
+    done ; \
+    python -c "import torchao; print('torchao', torchao.__version__)" \
+      || echo "torchao unavailable; worker will serve bf16"
 
 # Build-time import check. Everything above can succeed while the runtime is unusable —
 # a diffusers/torch mismatch only surfaces when the pipeline is imported, which at runtime
