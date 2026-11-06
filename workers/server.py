@@ -46,6 +46,18 @@ def health() -> dict[str, str]:
     return {"status": "ok", "model": MODEL_ID}
 
 
+@app.get("/ping")
+def ping() -> dict[str, str]:
+    """RunPod's default health-check path.
+
+    Serving both means the endpoint goes ready whichever path the platform's
+    `healthCheckPath` is set to. If only `/health` existed, a reverted setting leaves the
+    worker permanently "initializing" — the load balancer then has no target and requests
+    hang instead of failing, which is indistinguishable from a dead model.
+    """
+    return {"status": "ok", "model": MODEL_ID}
+
+
 @app.get("/v1/models")
 def models() -> dict[str, Any]:
     return {
