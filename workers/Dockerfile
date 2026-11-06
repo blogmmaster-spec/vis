@@ -48,13 +48,21 @@ RUN if [ "$BAKE_WEIGHTS" = "1" ]; then \
         mkdir -p /models/flux2-klein-4b && echo "weights not baked; expecting a volume or a runtime download"; \
     fi
 
-# Bake the super-resolution weights (BSD-3, ~64MB). Always baked — small, and the upscale
-# stage then needs no network at runtime.
-RUN mkdir -p /models/realesrgan \
-    && curl -fsSL -o /models/realesrgan/RealESRGAN_x4plus.pth \
-       https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.pth \
-    && test -s /models/realesrgan/RealESRGAN_x4plus.pth \
-    && echo "upscaler weights baked"
+# Bake the super-resolution weights (BSD-3, ~64MB). Tries a mirror first because the
+# upstream GitHub release asset is unreliable from CI, and it is never allowed to fail the
+# build: without the file the upscale stage reports itself unavailable and the worker serves
+# un-upscaled images, which is a degraded feature, not a broken deployment.
+RUN mkdir -p /models/realesrgan ; \
+    for url in \
+         https://huggingface.co/lllyasviel/Annotators/resolve/main/RealESRGAN_x4plus.pth \
+         https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.pth ; do \
+         if curl -fsSL --retry 2 --max-time 180 -o /models/realesrgan/RealESRGAN_x4plus.pth "$url" \
+            && test -s /models/realesrgan/RealESRGAN_x4plus.pth ; then \
+             echo "upscaler weights baked from $url" ; break ; \
+         fi ; \
+       done ; \
+    test -s /models/realesrgan/RealESRGAN_x4plus.pth \
+      || echo "upscaler weights unavailable; upscale stage will report unavailable"
 
 EXPOSE 8000
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
