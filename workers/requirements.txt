@@ -17,6 +17,7 @@ uvicorn[standard]>=0.32
 spandrel>=0.4          # super-resolution model loading (Real-ESRGAN class)
 vtracer>=0.6           # raster → SVG tracing
 
-# int8 weight-only quantisation (IMOTAN_DTYPE=int8). Must match the torch build in the base
-# image; torchao 0.7.x pairs with torch 2.5.
-torchao>=0.7,<0.8
+# NOTE: torchao (int8 weight-only) is installed separately in the Dockerfile with `|| true`.
+# It is deliberately NOT pinned here: torchao releases pin an exact torch version, and the
+# base image ships a patch release (2.5.1) that no pin matches, which makes pip resolution
+# fail for the whole install. The worker falls back to bf16 when torchao is absent.

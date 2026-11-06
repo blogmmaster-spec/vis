@@ -35,6 +35,7 @@ MAX_CANDIDATES = 6
 WARMUP_DIMS = (256, 256)
 
 _pipe = None
+_active_precision = "unknown"
 
 
 def _weights_ready(path: str) -> bool:
@@ -93,17 +94,31 @@ def _quantization_config():
 
     Returns None for bf16 (IMOTAN_DTYPE=bf16).
     """
+    global _active_precision
+
     mode = os.environ.get("IMOTAN_DTYPE", "int8").strip().lower()
     if mode in ("bf16", "bfloat16", "fp16", "none"):
+        _active_precision = "bf16"
         return None
     if mode not in ("int8", "8bit", "8-bit"):
         raise RuntimeError(f"IMOTAN_DTYPE must be int8 or bf16, got {mode!r}")
+
+    # torchao is optional: version alignment between torchao and torch is brittle, and a
+    # quantisation nicety must never be able to fail a deploy. Without it the worker serves
+    # bf16 — 13GB on a 24GB card, which fits comfortably.
+    try:
+        import torchao  # noqa: F401
+    except Exception:
+        print("[imotan] torchao not installed — falling back to bf16", flush=True)
+        _active_precision = "bf16"
+        return None
 
     try:
         from diffusers import TorchAoConfig
     except Exception:
         from diffusers.quantizers.torchao import TorchAoConfig
 
+    _active_precision = "int8-wo"
     return TorchAoConfig("int8_weight_only")
 
 
@@ -166,8 +181,11 @@ def _generate_one(pipe, prompt: str, width: int, height: int, steps: int, guidan
 
 
 def _precision_label() -> str:
+    """The precision actually loaded — not what the env asked for."""
+    if _active_precision != "unknown":
+        return _active_precision
     mode = os.environ.get("IMOTAN_DTYPE", "int8").strip().lower()
-    return "bf16" if mode in ("bf16", "bfloat16", "fp16", "none") else "int8-wo"
+    return "bf16" if mode in ("bf16", "bfloat16", "fp16", "none") else "int8-wo (requested)"
 
 
 class _BadRequest(ValueError):

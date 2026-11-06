@@ -26,6 +26,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# int8 weight-only is a nice-to-have, never a build gate. torchao pins an exact torch
+# version, so a mismatch here must not fail the image — the worker falls back to bf16.
+RUN pip install torchao \
+    || echo "torchao unavailable; int8 disabled, worker will serve bf16"
+
 COPY pipeline.py stages.py download_weights.py handler.py server.py ./
 
 # Bake the checkpoint only when asked. HF_HUB_OFFLINE is deliberately NOT set here — it
