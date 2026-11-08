@@ -61,7 +61,10 @@ from diffusers import Flux2KleinPipeline; \
 print('torch', torch.__version__, '| diffusers', diffusers.__version__, '| cuda', torch.version.cuda); \
 assert hasattr(torch, 'accelerator'), 'torch too old for this diffusers'"
 
-COPY pipeline.py stages.py download_weights.py handler.py server.py ./
+# Copy every module rather than naming them: a new module that is imported but not listed here
+# produces a ModuleNotFoundError at startup (a crash loop), and the failure looks like a broken
+# image rather than a missing COPY line. requirements.txt is excluded by the pattern being *.py.
+COPY *.py ./
 
 # Bake the checkpoint only when asked. HF_HUB_OFFLINE is deliberately NOT set here — it
 # would block this very download. handler.py sets it after the weights resolve.
