@@ -103,9 +103,8 @@ def _quantization_config():
     if mode not in ("int8", "8bit", "8-bit"):
         raise RuntimeError(f"IMOTAN_DTYPE must be int8 or bf16, got {mode!r}")
 
-    # torchao is optional: version alignment between torchao and torch is brittle, and a
-    # quantisation nicety must never be able to fail a deploy. Without it the worker serves
-    # bf16 — 13GB on a 24GB card, which fits comfortably.
+    # torchao is optional: version alignment is brittle, and a quantisation nicety must never
+    # be able to fail a deploy. Without it the worker serves bf16 — ~16GB on a 24GB card.
     try:
         import torchao  # noqa: F401
     except Exception:
@@ -113,13 +112,36 @@ def _quantization_config():
         _active_precision = "bf16"
         return None
 
+    # Preferred: the current diffusers API. A config *object* wrapped in a quant mapping,
+    # targeting only the transformer. The old string form ("int8_weight_only") is legacy and
+    # raises a misleading "requires torchao >= 0.15" error even on a compatible build.
+    try:
+        from diffusers import PipelineQuantizationConfig, TorchAoConfig
+        from torchao.quantization import Int8WeightOnlyConfig
+        from torchao.quantization.granularity import PerGroup
+
+        config = PipelineQuantizationConfig(
+            quant_mapping={
+                "transformer": TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))
+            }
+        )
+        _active_precision = "int8-wo"
+        return config
+    except Exception as exc:
+        print(f"[imotan] modern torchao config unavailable: {exc}", flush=True)
+
+    # Fallback for older diffusers/torchao pairs.
     try:
         from diffusers import TorchAoConfig
-    except Exception:
-        from diffusers.quantizers.torchao import TorchAoConfig
 
-    _active_precision = "int8-wo"
-    return TorchAoConfig("int8_weight_only")
+        legacy = TorchAoConfig("int8_weight_only")
+        _active_precision = "int8-wo"
+        return legacy
+    except Exception as exc:
+        print(f"[imotan] legacy torchao config unavailable: {exc}", flush=True)
+
+    _active_precision = "bf16"
+    return None
 
 
 def _load():
@@ -157,12 +179,37 @@ def _load():
     torch.cuda.synchronize()
 
     _pipe = pipe
+    _report_vram("after load")
     print(
         f"[imotan] loaded {MODEL_ID} ({'int8 weight-only' if quant else 'bf16'}) "
         f"and warmed up in {time.time() - started:.1f}s",
         flush=True,
     )
     return _pipe
+
+
+def _report_vram(stage: str) -> None:
+    """Log real VRAM use, so capacity planning is measured rather than estimated.
+
+    The pipeline carries a Qwen3-4B text encoder alongside the 4B transformer, so the
+    whole thing is ~16GB in bf16 — noticeably more than the checkpoint's quoted figure.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        peak = torch.cuda.max_memory_allocated() / (1024**3)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(
+            f"[imotan] vram {stage}: {allocated:.1f}GB allocated, "
+            f"{reserved:.1f}GB reserved, {peak:.1f}GB peak, {total:.1f}GB total",
+            flush=True,
+        )
+    except Exception as exc:  # never let diagnostics break a boot
+        print(f"[imotan] vram report skipped: {exc}", flush=True)
 
 
 def _generate_one(pipe, prompt: str, width: int, height: int, steps: int, guidance: float, seed: int):
@@ -306,6 +353,8 @@ def generate_payload(body: dict) -> dict:
                 "notes": stage_notes,
             }
         )
+
+    _report_vram(f"after {count} image(s) x {per_image} candidate(s)")
 
     return {
         "created": created,

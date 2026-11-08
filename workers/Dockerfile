@@ -36,14 +36,15 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# int8 weight-only needs torchao. Two traps: a wrong torchao installs cleanly and then breaks
-# `import diffusers`, and diffusers only enforces its `torchao >= 0.15` floor when the config is
-# *constructed* — so an import-only check passes with a version that is too old.
-# The check below therefore builds the real config. `--no-deps` stops pip replacing torch.
-RUN for v in 0.17.0 0.16.0 0.15.0 ; do \
+# int8 weight-only needs torchao. Three traps: a wrong torchao installs cleanly and then breaks
+# `import diffusers`; diffusers only enforces its version floor when the config is *constructed*;
+# and the legacy string form ("int8_weight_only") raises that same misleading version error even
+# on a good build. The check below therefore exercises the CURRENT API — a config object wrapped
+# in a quant mapping — which is what handler.py actually uses at runtime.
+RUN for v in 0.18.0 0.17.0 0.16.0 0.15.0 ; do \
         echo "torchao: trying $v" ; \
         if pip install --no-deps "torchao==$v" >/dev/null 2>&1 \
-           && python -c "import torchao; from diffusers import TorchAoConfig; TorchAoConfig('int8_weight_only')" >/dev/null 2>&1 ; then \
+           && python -c "from torchao.quantization import Int8WeightOnlyConfig; from torchao.quantization.granularity import PerGroup; from diffusers import PipelineQuantizationConfig, TorchAoConfig; PipelineQuantizationConfig(quant_mapping={'transformer': TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))})" >/dev/null 2>&1 ; then \
             echo "torchao: $v works" ; break ; \
         fi ; \
         pip uninstall -y torchao >/dev/null 2>&1 || true ; \
