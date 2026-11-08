@@ -107,7 +107,9 @@ a warm process to snapshot; without it every cold start pays the full load.
 |---|---|---|
 | `MODEL_PATH` | `/models/flux2-klein-4b` | baked path; repoint to upgrade the model |
 | `IMOTAN_STEPS` | `4` | declare as an enum `[4]` in listings, never a range |
-| `IMOTAN_DTYPE` | `int8` | `int8` = int8 weight-only; `bf16` = full precision |
+| `IMOTAN_DTYPE` | `int8` | `bf16` forces the unquantised path without a rebuild |
+| `IMOTAN_EXPAND` | *(off)* | `1` enables the prompt-expansion stage |
+| `IMOTAN_EXPAND_MODEL` | `Qwen/Qwen2.5-1.5B-Instruct` | expander weights; int8 loaded on first use |
 | `IMOTAN_BEST_OF` | `2` | candidates per requested image, capped at 3 |
 | `IMOTAN_FORMAT` | `jpeg` | default when the request omits `format` |
 | `IMOTAN_QUALITY` | `90` | JPEG/WebP quality |
@@ -119,33 +121,45 @@ a warm process to snapshot; without it every cold start pays the full load.
 
 ## Precision
 
-The image **tries to enable int8 weight-only at build time and falls back to bf16** if it can't.
+**Verified state of the shipped image:**
 
-`torchao` is the only way to get int8, and its releases pin exact torch versions — a wrong one
-installs cleanly and then breaks `import diffusers` (`cannot import name 'ScalingType'`). So the
-Dockerfile tries a list of torchao versions newest-first with `--no-deps`, keeping the first that
-leaves the runtime importable, and prints which one won:
+| | |
+|---|---|
+| torch | `2.8.0+cu128` |
+| diffusers | `0.42.0.dev0` (git main) |
+| torchao | `0.17.0` — 0.18 requires torch ≥ 2.11 |
+| transformer | **int8 weight-only** |
+| text encoder | **bf16** (see below) |
+| VRAM at load | **11.46GB** |
+| VRAM peak, 2 candidates @ 1184×880 | **13.76GB** |
+| GPU total | 23.5GB |
+
+The Dockerfile tries torchao 0.18 → 0.15 and keeps the first version that survives the *current*
+API check — a config object wrapped in a quant mapping, which is what `handler.py` uses at
+runtime. If none work, no torchao is installed and the worker serves bf16.
+
+Every boot logs measured per-component size and dtype, plus VRAM:
 
 ```
-torchao: 0.13.0 works
-torchao 0.13.0
+[imotan] transformer: 3.85GB int8
+[imotan] text_encoder: 7.53GB bfloat16
+[imotan] vae: 0.16GB bfloat16
+[imotan] vram after load: 11.5GB allocated, 11.9GB reserved, 11.7GB peak, 23.5GB total
 ```
 
-If none work you'll see `torchao unavailable; worker will serve bf16` and the build still
-succeeds. `IMOTAN_DTYPE=bf16` forces the unquantised path even when torchao is present.
+Read those rather than the config label — the label reports what was requested, the lines
+report what actually loaded.
 
-| Value | Weight footprint | Notes |
-|---|---|---|
-| `int8` (default when torchao is present) | ~4GB transformer | int8 weight-only via torchao |
-| `bf16` | ~8GB transformer, ~13GB pipeline | always works; fits 24GB with headroom |
+**Why the text encoder is not quantised.** The encoder is Qwen3-4B (~8GB in bf16) and is the
+largest single resident component, so it is the obvious next saving. But listing it in the
+diffusers `quant_mapping` makes `from_pretrained` die inside huggingface_hub argument
+validation — the component is a transformers model and diffusers re-enters the hub loader for
+it — which crash-loops the worker. Doing it properly means loading the encoder separately with
+`transformers.TorchAoConfig` and assigning `pipe.text_encoder` afterwards.
 
 Why int8 and not fp8: fp8 *compute* needs Ada or Hopper, so on a 3090 or A5000 it is emulated
 and slower than bf16. int8 weight-only dequantises inside the matmul, so bf16 compute is
-retained while half the weight bytes move — and diffusion at 1MP is bandwidth-bound, which is
-where that pays.
-
-Every response reports `imotan.precision` (`int8-wo` or `bf16`) — read that rather than trusting
-the env, since it reflects what actually loaded.
+retained while half the weight bytes move.
 
 ---
 

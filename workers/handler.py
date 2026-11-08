@@ -16,6 +16,7 @@ import time
 
 import runpod
 
+import expander
 import stages
 from pipeline import (
     build_prompt,
@@ -251,41 +252,28 @@ def _quantise_text_encoder(pipe) -> None:
 
 
 def _component_bytes(module) -> tuple[float, str]:
-    """Actual resident weight bytes and effective precision of a pipeline component.
+    """Resident weight size and precision of a pipeline component.
 
-    Must read `untyped_storage().nbytes()`, not `numel() * element_size()`: torchao wraps
-    int8 weights in an AffineQuantizedTensor, whose logical `dtype`/`element_size` still
-    describe bf16, so the naive product over-reports by ~2x and makes a quantised component
-    look unquantised. Bytes-per-parameter from real storage is the honest signal.
+    Precision is read from the tensor *class*, not from byte arithmetic: torchao replaces
+    quantised weights with an `AffineQuantizedTensor` whose `.dtype` and `untyped_storage()`
+    both still describe bf16, so size math reports ~2x and calls an int8 component bf16. The
+    class name is the only reliable signal, and the KV cache in the `vram` line is the
+    authoritative total.
     """
-    seen: set[int] = set()
-    total = 0
     params = 0
+    quantised = False
+    dtype = "?"
 
     for param in module.parameters():
         params += param.numel()
-        try:
-            storage = param.untyped_storage()
-        except Exception:
-            continue
-        key = id(storage)
-        if key in seen:
-            continue
-        seen.add(key)
-        total += storage.nbytes()
+        if "AffineQuantized" in type(param).__name__:
+            quantised = True
+        elif dtype == "?":
+            dtype = str(param.dtype).replace("torch.", "")
 
-    if params and total:
-        bytes_per_param = total / params
-        if bytes_per_param <= 1.2:
-            precision = "int8"
-        elif bytes_per_param <= 2.4:
-            precision = "bf16"
-        else:
-            precision = f"{bytes_per_param:.1f}B/param"
-    else:
-        precision = "?"
-
-    return total / (1024**3), precision
+    if quantised:
+        return params / (1024**3), "int8"  # int8 weight-only stores ~1 byte per parameter
+    return params * 2 / (1024**3), dtype or "bf16"
 
 
 def _report_components(pipe) -> None:
@@ -407,6 +395,16 @@ def generate_payload(body: dict) -> dict:
 
     # `style` is accepted for compatibility with the older client shape and folded into
     # the prompt rather than forwarded as an upstream parameter (DALL-E-only field).
+    #
+    # The expander runs on the caller's words only, before `build_prompt` appends the
+    # technical suffix, so the two never compete over the same vocabulary.
+    expansion = None
+    if expander.enabled():
+        expanded, expansion_status = expander.expand(raw_prompt)
+        expansion = {"status": expansion_status, "used": expanded != raw_prompt}
+        if expanded != raw_prompt:
+            raw_prompt = expanded
+
     prompt, intent = build_prompt(raw_prompt)
     if body.get("style"):
         prompt = f"{prompt}, {str(body['style']).strip()}"
@@ -486,6 +484,7 @@ def generate_payload(body: dict) -> dict:
             "best_of": per_image,
             "precision": _precision_label(),
             "text_precision": _active_text_precision if _active_text_precision != "unknown" else "bf16",
+            "prompt_expansion": expansion,
             "upscale": upscale_factor or None,
             "stages_available": {
                 "upscale": stages.upscaler_available(),
