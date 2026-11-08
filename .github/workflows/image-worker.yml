@@ -1,11 +1,13 @@
 name: Build image worker
 
-# Builds workers/image-worker and pushes it to GHCR, so neither the build nor the image
-# upload touches a local machine or a slow uplink.
+# Builds workers/ and pushes it to GHCR, so neither the build nor the image upload touches
+# a local machine or a slow uplink.
 #
 # BAKE_WEIGHTS=0 on purpose: a baked image is ~20GB, which does not fit a GitHub-hosted
 # runner's ~14GB free disk. Slim is ~8GB, and the 13GB of weights download inside RunPod's
 # data center on first boot instead — their network, not yours.
+#
+# GIT_SHA is stamped into the image so every boot can log which commit it is actually running.
 
 on:
   push:
@@ -50,8 +52,6 @@ jobs:
           context: workers
           push: true
           build-args: |
-            BAKE_WEIGHTS=0
-                      build-args: |
             BAKE_WEIGHTS=0
             GIT_SHA=${{ github.sha }}
           # `latest` is what RunPod pulls; the SHA tag lets you pin or roll back.
