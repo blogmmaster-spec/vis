@@ -61,6 +61,12 @@ from diffusers import Flux2KleinPipeline; \
 print('torch', torch.__version__, '| diffusers', diffusers.__version__, '| cuda', torch.version.cuda); \
 assert hasattr(torch, 'accelerator'), 'torch too old for this diffusers'"
 
+# Build stamp. Every boot logs this, so a log line proves which commit is actually running —
+# without it, telling an old image from a new one means inferring it from incidental output,
+# which is exactly how a stale image gets mistaken for a broken build.
+ARG GIT_SHA=unknown
+ENV IMOTAN_BUILD_SHA=$GIT_SHA
+
 # Copy every module rather than naming them: a new module that is imported but not listed here
 # produces a ModuleNotFoundError at startup (a crash loop), and the failure looks like a broken
 # image rather than a missing COPY line. requirements.txt is excluded by the pattern being *.py.

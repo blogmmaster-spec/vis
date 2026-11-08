@@ -168,6 +168,11 @@ def _load():
     from diffusers import Flux2KleinPipeline
 
     started = time.time()
+    print(
+        f"[imotan] build {os.environ.get('IMOTAN_BUILD_SHA', 'unknown')[:12]} "
+        f"starting on {MODEL_ID}",
+        flush=True,
+    )
     resolved = _ensure_weights()
     quant = _quantization_config()
 
@@ -261,6 +266,7 @@ def _component_bytes(module) -> tuple[float, str]:
     authoritative total.
     """
     params = 0
+    element_bytes = 0
     quantised = False
     dtype = "?"
 
@@ -268,12 +274,14 @@ def _component_bytes(module) -> tuple[float, str]:
         params += param.numel()
         if "AffineQuantized" in type(param).__name__:
             quantised = True
-        elif dtype == "?":
+            continue
+        element_bytes += param.numel() * param.element_size()
+        if dtype == "?":
             dtype = str(param.dtype).replace("torch.", "")
 
     if quantised:
         return params / (1024**3), "int8"  # int8 weight-only stores ~1 byte per parameter
-    return params * 2 / (1024**3), dtype or "bf16"
+    return element_bytes / (1024**3), dtype or "bf16"
 
 
 def _report_components(pipe) -> None:
