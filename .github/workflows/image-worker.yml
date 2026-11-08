@@ -51,6 +51,9 @@ jobs:
           push: true
           build-args: |
             BAKE_WEIGHTS=0
+                      build-args: |
+            BAKE_WEIGHTS=0
+            GIT_SHA=${{ github.sha }}
           # `latest` is what RunPod pulls; the SHA tag lets you pin or roll back.
           tags: |
             ${{ env.IMAGE }}:latest
