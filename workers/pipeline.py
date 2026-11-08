@@ -67,8 +67,20 @@ STYLE_SUFFIX: dict[str, str] = {
     "product": "product photograph, clean background, soft even lighting",
     "illustration": "illustration, flat colour, clean line work",
     "graphic": "graphic design, bold shapes, high contrast",
-    "text": "legible text, crisp lettering, correct spelling",
+    # Fallback only — used when the prompt quotes no literal string to render.
+    # See `_text_suffix`: when the caller *does* quote its lettering, the suffix is
+    # derived from those quotes and becomes a constraint rather than a compliment.
+    #
+    # Why: "legible text, crisp lettering" tells the model that text should be good,
+    # not that text should be limited. At 4 steps klein reads that as licence to add
+    # a headline of its own invention, and invented strings are exactly what it
+    # misspells. Naming the permitted strings is what actually stops it.
+    "text": "clear legible lettering, correct spelling, no caption, no watermark",
 }
+
+# Straight and curly quotes, guillemets, and backticks. A string the caller put in
+# quotes is a string it wants rendered verbatim — that is the whole contract.
+_QUOTED = re.compile(r"[\"'“”„«»‘’`]([^\"'“”„«»‘’`\n]{1,60})[\"'“”„«»‘’`]")
 
 _INTENT_PATTERNS: list[tuple[str, str]] = [
     ("text", r"\b(logo|poster|flyer|banner|sign|signage|label|text|typograph|wordmark)\b"),
@@ -88,6 +100,34 @@ def detect_intent(prompt: str) -> str | None:
     return None
 
 
+def expected_strings(prompt: str) -> list[str]:
+    """Literal strings the caller asked to be rendered, in prompt order.
+
+    Only quoted spans count. This is deliberate: it gives callers a lever they can
+    actually pull (quote it, and it is checked and protected) and it keeps the worker
+    from guessing at capitalised nouns.
+    """
+    seen: list[str] = []
+    for match in _QUOTED.finditer(prompt):
+        value = " ".join(match.group(1).split())
+        if len(value) < 2 or value.lower() in {item.lower() for item in seen}:
+            continue
+        seen.append(value)
+    return seen[:4]
+
+
+def _text_suffix(prompt: str) -> str:
+    """Suffix for text-intent prompts, narrowed to the quoted strings when present."""
+    wanted = expected_strings(prompt)
+    if not wanted:
+        return STYLE_SUFFIX["text"]
+    listing = ", ".join(f'"{text}"' for text in wanted)
+    return (
+        f"only the text {listing}, no other text, no additional words, "
+        "no headline, sharp legible spelling, clean plain background behind the text"
+    )
+
+
 def build_prompt(prompt: str) -> tuple[str, str | None]:
     """Return (shaped prompt, detected intent).
 
@@ -98,7 +138,7 @@ def build_prompt(prompt: str) -> tuple[str, str | None]:
         raise ValueError("prompt is empty")
 
     intent = detect_intent(prompt)
-    suffix = STYLE_SUFFIX.get(intent or "")
+    suffix = _text_suffix(prompt) if intent == "text" else STYLE_SUFFIX.get(intent or "")
     if not suffix:
         return prompt, intent
     # Avoid doubling a suffix the caller already wrote.

@@ -17,12 +17,14 @@ import time
 import runpod
 
 import expander
+import ocr
 import stages
 from pipeline import (
     build_prompt,
     check_prompt,
     dimensions_for,
     encode,
+    expected_strings,
     technical_score,
 )
 
@@ -217,6 +219,13 @@ def _load():
         f"text_encoder {_active_text_precision}) and warmed up in {time.time() - started:.1f}s",
         flush=True,
     )
+    # Text-intent requests are ranked by reading the lettering back, so whether the OCR
+    # engine actually loaded changes what best-of-N optimises for. Say it out loud at
+    # boot instead of leaving it to be inferred from a later response.
+    try:
+        print(f"[imotan] ocr {'available' if ocr.available() else 'unavailable (technical score only)'}", flush=True)
+    except Exception as exc:  # never let a diagnostic fail the load
+        print(f"[imotan] ocr probe failed: {exc}", flush=True)
     return _pipe
 
 
@@ -427,14 +436,26 @@ def generate_payload(body: dict) -> dict:
     images = []
     diagnostics = []
 
+    # Only text-intent prompts have lettering worth verifying. `prompt` already carries
+    # the quoted strings — the shaping suffix re-states the caller's own quotes and never
+    # invents one — so a single extraction serves both the scorer and the response.
+    wanted = expected_strings(prompt) if intent == "text" else []
+
     for index in range(count):
         candidates = []
         for attempt in range(per_image):
             seed = base_seed + index * 1000 + attempt
             image = _generate_one(pipe, prompt, width, height, steps, guidance, seed)
-            candidates.append((technical_score(image), seed, image))
+            technical = technical_score(image)
+            reading = ocr.score(image, wanted) if wanted else None
+            # Text requests are ranked mostly on the lettering, with the technical score
+            # kept as a tie-break so a legible-but-smeared frame cannot win.
+            score = technical if reading is None else 0.8 * reading["score"] + 0.2 * technical
+            candidates.append((score, seed, image, technical, reading))
 
-        best_score, best_seed, best_image = max(candidates, key=lambda entry: entry[0])
+        best_score, best_seed, best_image, _, best_reading = max(
+            candidates, key=lambda entry: entry[0]
+        )
 
         stages_applied: list[dict] = []
         stage_notes: list[str] = []
@@ -471,7 +492,16 @@ def generate_payload(body: dict) -> dict:
                 "index": index,
                 "selected_seed": best_seed,
                 "score": round(best_score, 4),
-                "candidates": [{"seed": seed, "score": round(score, 4)} for score, seed, _ in candidates],
+                "text_check": best_reading,
+                "candidates": [
+                    {
+                        "seed": seed,
+                        "score": round(score, 4),
+                        "technical": round(technical, 4),
+                        **({"text_check": reading} if reading else {}),
+                    }
+                    for score, seed, _, technical, reading in candidates
+                ],
                 "stages": stages_applied,
                 "notes": stage_notes,
             }
@@ -493,6 +523,12 @@ def generate_payload(body: dict) -> dict:
             "precision": _precision_label(),
             "text_precision": _active_text_precision if _active_text_precision != "unknown" else "bf16",
             "prompt_expansion": expansion,
+            # Whether lettering was actually verified, and against what. Callers quote the
+            # strings they need rendered; this is the receipt that we checked them.
+            "text_check": {
+                "enabled": bool(wanted) and ocr.available(),
+                "expected": wanted,
+            },
             "upscale": upscale_factor or None,
             "stages_available": {
                 "upscale": stages.upscaler_available(),

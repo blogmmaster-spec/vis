@@ -201,14 +201,44 @@ transparency must ask for `png` or `webp` explicitly, and the vectoriser path re
   "data": [{ "b64_json": "…", "media_type": "image/jpeg", "revised_prompt": "…" }],
   "imotan": {
     "model": "…", "width": 1184, "height": 880, "steps": 4, "format": "jpeg",
-    "intent": "product", "best_of": 2, "upscale": 2,
+    "intent": "text", "best_of": 2, "upscale": 2,
+    "text_precision": "int8-wo",
+    "prompt_expansion": { "status": "expanded", "used": true },
+    "text_check": { "enabled": true, "expected": ["Get Started for Free"] },
     "stages_available": { "upscale": true, "vectorize": true },
-    "selection": [{ "index": 0, "selected_seed": 42, "score": 0.71,
-                    "candidates": [{ "seed": 42, "score": 0.71 }, { "seed": 43, "score": 0.58 }],
-                    "stages": [{ "stage": "upscale", "output": "2368x1760" }], "notes": [] }]
+    "selection": [{
+      "index": 0, "selected_seed": 42, "score": 0.91,
+      "text_check": { "coverage": 1.0, "extra": 0.0, "score": 1.0 },
+      "candidates": [
+        { "seed": 42, "score": 0.91, "technical": 0.55,
+          "text_check": { "coverage": 1.0, "extra": 0.0, "score": 1.0 } },
+        { "seed": 43, "score": 0.72, "technical": 0.61,
+          "text_check": { "coverage": 1.0, "extra": 0.5, "score": 0.875 } }
+      ],
+      "stages": [{ "stage": "upscale", "output": "2368x1760" }], "notes": []
+    }]
   }
 }
 ```
+
+### Text rendering
+
+Quote every string you want rendered, and nothing else:
+
+```json
+{ "prompt": "A banner with a \"Get Started for Free\" button, bright energetic palette", "intent": "text" }
+```
+
+- Quoted spans are the contract. `text_check.expected` echoes them back.
+- For `intent: "text"` the shaping suffix stops being a compliment ("legible text") and
+  becomes a constraint: *only the text "…", no other text, no additional words, no headline*.
+  Unconstrained, klein invents a headline and misspells it.
+- When OCR is available, best-of-N ranks text candidates on `coverage` versus `extra`
+  (lettering it was never asked for) instead of on edge energy alone, so a clean frame
+  outranks a sharper one with a garbled headline. `text_check.enabled` says whether that
+  happened; `false` means the technical score alone decided.
+- Short strings win. Long unquoted copy is where 4-step klein fails, and that is a model
+  limit no suffix fixes.
 
 ---
 

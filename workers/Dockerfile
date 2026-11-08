@@ -36,6 +36,15 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
+# Optional extras, best-effort by design. The OCR engine lets best-of-N rank text-intent
+# candidates by reading the lettering back instead of by edge energy. It is NOT worth
+# failing a 20-minute build over: if it will not install, the worker boots, reports
+# `text_check.enabled = false`, and ranks on the technical score exactly as before.
+COPY requirements-optional.txt .
+RUN pip install -r requirements-optional.txt \
+    && python -c "import rapidocr_onnxruntime; print('ocr: rapidocr available')" \
+      || echo "ocr: rapidocr unavailable; text-intent ranking falls back to technical score"
+
 # int8 weight-only needs torchao. Three traps: a wrong torchao installs cleanly and then breaks
 # `import diffusers`; diffusers only enforces its version floor when the config is *constructed*;
 # and the legacy string form ("int8_weight_only") raises that same misleading version error even
