@@ -192,6 +192,7 @@ def _load():
     torch.cuda.synchronize()
 
     _pipe = pipe
+    _report_components(pipe)
     _report_vram("after load")
     print(
         f"[imotan] loaded {MODEL_ID} ({'int8 weight-only' if quant else 'bf16'}) "
@@ -199,6 +200,41 @@ def _load():
         flush=True,
     )
     return _pipe
+
+
+def _component_bytes(module) -> tuple[float, str]:
+    """Actual resident weight size and dtype of a pipeline component.
+
+    This is the only trustworthy answer to "did quantisation apply?". `element_size()` is 1
+    for int8 and 2 for bf16, so the byte total distinguishes a quantised component from a
+    requested-but-ignored one — which a config label cannot.
+    """
+    total = 0
+    dtype = "?"
+    first = True
+    for param in module.parameters():
+        if first:
+            dtype = str(param.dtype).replace("torch.", "")
+            first = False
+        total += param.numel() * param.element_size()
+    return total / (1024**3), dtype
+
+
+def _report_components(pipe) -> None:
+    """Log measured size/dtype per component and correct the precision labels."""
+    global _active_precision, _active_text_precision
+
+    for name in ("transformer", "text_encoder", "vae"):
+        component = getattr(pipe, name, None)
+        if component is None:
+            continue
+        size_gb, dtype = _component_bytes(component)
+        print(f"[imotan] {name}: {size_gb:.2f}GB {dtype}", flush=True)
+
+        if name == "transformer":
+            _active_precision = "int8-wo" if dtype in ("int8", "uint8") else dtype
+        elif name == "text_encoder":
+            _active_text_precision = "int8-wo" if dtype in ("int8", "uint8") else dtype
 
 
 def _report_vram(stage: str) -> None:
