@@ -23,9 +23,23 @@ import threading
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
-# Permitted additions are things like "85mm", "directional", "rippled" — a handful. Beyond
-# this the rewrite is drifting into new content rather than describing the existing subject.
-MAX_NEW_TERMS = 8
+# Runaway-growth bound only. Attempts to police *which* words a rewrite may add (allowlisting
+# lighting/camera vocabulary, capping new content words) were abandoned: they rejected valid
+# expansions because a good rewrite legitimately introduces "85mm", "arena" and "sand", and they
+# still admitted invented objects phrased in ordinary nouns. Measured against real traffic the
+# strict version rejected 3 of 3 requests, which makes the stage useless.
+#
+# So: retention is enforced (a rewrite that loses the subject is caught), gross inflation is
+# caught, and invention is left to the system prompt. A rewrite that slips in one extra object
+# will pass — that is a known, accepted limitation, and the reason this stage is opt-in.
+GROWTH_FACTOR = 3
+GROWTH_FLOOR = 8
+
+# Fraction of the caller's significant words that must survive. Not 100%: a good rewrite fixes
+# spelling ("acction" -> "action") and that counted as a dropped term under an exact-match rule,
+# which rejected every real prompt. Losing one or two words of ten is normal paraphrase; losing
+# half means the subject changed.
+MIN_RETENTION = 0.6
 
 _SYSTEM = (
     "You rewrite prompts for an image generation model.\n"
@@ -179,7 +193,9 @@ def _accept(original: str, reply: str) -> tuple[bool, str]:
         return False, "empty"
     if len(reply) < 15:
         return False, "too short"
-    if len(reply) > max(200, 3 * len(original) + 160):
+    # An expanded prompt is legitimately much longer than the original; a 3x cap rejected most
+    # real rewrites. The absolute floor keeps one-word prompts usable.
+    if len(reply) > max(400, 4 * len(original) + 200):
         return False, "too long"
 
     lowered = reply.lower()
@@ -187,17 +203,26 @@ def _accept(original: str, reply: str) -> tuple[bool, str]:
         if noise in lowered:
             return False, f"meta text ({noise})"
 
-    dropped = sorted(_significant(original) - _significant(reply))
-    if dropped:
-        return False, f"dropped terms: {', '.join(dropped[:4])}"
+    original_terms = _significant(original)
+    reply_terms = _significant(reply)
+    if original_terms:
+        kept = original_terms & reply_terms
+        ratio = len(kept) / len(original_terms)
+        if ratio < MIN_RETENTION:
+            dropped = sorted(original_terms - reply_terms)
+            return (
+                False,
+                f"kept {len(kept)}/{len(original_terms)} terms, dropped: {', '.join(dropped[:4])}",
+            )
 
     # Invention cannot be detected by string matching — "and a red apple" passes any retention
     # check. A cap on genuinely new content words catches runaway additions, which is the
     # failure mode that matters most; subtle single-object invention still gets through, which
     # is why this stage is opt-in rather than always on.
-    invented = sorted(_significant(reply) - _significant(original))
-    if len(invented) > MAX_NEW_TERMS:
-        return False, f"added too much: {', '.join(invented[:4])}"
+    # Runaway inflation, not vocabulary policing: a rewrite that doubles or triples the content
+    # is drifting; one that stays within a few times the original is doing its job.
+    if len(reply_terms) > GROWTH_FACTOR * len(original_terms) + GROWTH_FLOOR:
+        return False, f"grew to {len(reply_terms)} terms from {len(original_terms)}"
 
     return True, "ok"
 
