@@ -200,21 +200,41 @@ def _load():
 
 
 def _component_bytes(module) -> tuple[float, str]:
-    """Actual resident weight size and dtype of a pipeline component.
+    """Actual resident weight bytes and effective precision of a pipeline component.
 
-    This is the only trustworthy answer to "did quantisation apply?". `element_size()` is 1
-    for int8 and 2 for bf16, so the byte total distinguishes a quantised component from a
-    requested-but-ignored one — which a config label cannot.
+    Must read `untyped_storage().nbytes()`, not `numel() * element_size()`: torchao wraps
+    int8 weights in an AffineQuantizedTensor, whose logical `dtype`/`element_size` still
+    describe bf16, so the naive product over-reports by ~2x and makes a quantised component
+    look unquantised. Bytes-per-parameter from real storage is the honest signal.
     """
+    seen: set[int] = set()
     total = 0
-    dtype = "?"
-    first = True
+    params = 0
+
     for param in module.parameters():
-        if first:
-            dtype = str(param.dtype).replace("torch.", "")
-            first = False
-        total += param.numel() * param.element_size()
-    return total / (1024**3), dtype
+        params += param.numel()
+        try:
+            storage = param.untyped_storage()
+        except Exception:
+            continue
+        key = id(storage)
+        if key in seen:
+            continue
+        seen.add(key)
+        total += storage.nbytes()
+
+    if params and total:
+        bytes_per_param = total / params
+        if bytes_per_param <= 1.2:
+            precision = "int8"
+        elif bytes_per_param <= 2.4:
+            precision = "bf16"
+        else:
+            precision = f"{bytes_per_param:.1f}B/param"
+    else:
+        precision = "?"
+
+    return total / (1024**3), precision
 
 
 def _report_components(pipe) -> None:
