@@ -223,7 +223,10 @@ def _load():
     # engine actually loaded changes what best-of-N optimises for. Say it out loud at
     # boot instead of leaving it to be inferred from a later response.
     try:
-        print(f"[imotan] ocr {'available' if ocr.available() else 'unavailable (technical score only)'}", flush=True)
+        if ocr.available():
+            print("[imotan] ocr available", flush=True)
+        else:
+            print(f"[imotan] ocr unavailable (technical score only): {ocr.reason()}", flush=True)
     except Exception as exc:  # never let a diagnostic fail the load
         print(f"[imotan] ocr probe failed: {exc}", flush=True)
     return _pipe
@@ -528,6 +531,14 @@ def generate_payload(body: dict) -> dict:
             "text_check": {
                 "enabled": bool(wanted) and ocr.available(),
                 "expected": wanted,
+                # A bare `enabled: false` reads like a model problem and sends you looking
+                # in the wrong place. The reason is the difference between "the model cannot
+                # spell" and "opencv never imported".
+                **(
+                    {"reason": ocr.reason() or "ocr unavailable"}
+                    if wanted and not ocr.available()
+                    else {}
+                ),
             },
             "upscale": upscale_factor or None,
             "stages_available": {

@@ -1,12 +1,19 @@
-# Best-effort extras. Installed with `|| true` in the Dockerfile so a resolution
-# failure can never break the image — the worker degrades honestly instead.
+# Best-effort extras. The Dockerfile installs this file with `--no-deps` and then adds
+# the dependencies by hand, so a resolution clash here cannot break the image — the
+# worker degrades honestly instead.
 #
 # rapidocr-onnxruntime: CPU OCR used to score lettering on text-intent requests.
 # ~15 MB of ONNX models and no torch dependency, so it runs while the GPU is busy
 # diffusing. Without it best-of-N falls back to the technical score and `text_check`
-# reports unavailable, which is visible in the API response rather than hidden.
+# reports unavailable *with a reason*, which is visible in the API response rather
+# than hidden in a boot log.
 rapidocr-onnxruntime>=1.3
 
-# NOTE: onnxruntime pins a narrow numpy range. If pip resolution conflicts with the
-# base image's numpy, drop this file from the build rather than pinning numpy here —
-# numpy is a hard dependency of the diffusion stack and must win.
+# Why the dependencies are hand-listed in the Dockerfile rather than resolved from here:
+#
+#   * rapidocr declares `opencv-python`, the non-headless wheel, which links against
+#     libGL — absent from the `pytorch:*` runtime base image. Installing it normally
+#     yields a pip success followed by `import cv2` failing on `libGL.so.1`. The build
+#     installs `opencv-python-headless` instead, which has no GL dependency at all.
+#   * `--no-deps` also keeps pip from re-resolving numpy. numpy is a hard dependency of
+#     the diffusion stack; onnxruntime must fit around it, never the other way round.

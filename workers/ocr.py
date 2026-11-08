@@ -24,6 +24,13 @@ can run while the GPU is busy with the diffusion pipeline. It is installed on a
 best-effort basis exactly like torchao (`|| true` in the Dockerfile): if it is
 missing the worker still boots and `available()` returns False, and the caller
 falls back to the technical score with no fake result.
+
+That fallback is the dangerous part, because it is *silent from the outside*: the
+images simply come back worse and nothing says why. `reason()` exists so the first
+failure is carriable into the response instead of being one line in a boot log
+nobody reads. The failure it was written for is worth knowing about — the base
+image has no libGL, rapidocr pulls the GL-linked `opencv-python` wheel, and the
+import dies on `libGL.so.1` long after pip reported success.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from PIL import Image
 
 _engine = None
 _load_failed = False
+_reason: str | None = None
 
 # A detected line shorter than this is treated as noise (icon noise, a stray glyph)
 # and left out of the "invented text" tax rather than punished at full weight.
@@ -52,17 +60,28 @@ def available() -> bool:
     return _get_engine() is not None
 
 
+def reason() -> str | None:
+    """The exception that stopped the engine loading, or None when it loaded.
+
+    Only the first failure is kept. The engine is retried on every request, so later
+    attempts would just repeat the same line and bury the one that explains it.
+    """
+    _get_engine()
+    return _reason
+
+
 def _get_engine():
-    global _engine, _load_failed
+    global _engine, _load_failed, _reason
     if _engine is not None or _load_failed:
         return _engine
     try:
         from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
         _engine = RapidOCR()
-    except Exception:
+    except Exception as exc:
         _load_failed = True
         _engine = None
+        _reason = f"{type(exc).__name__}: {exc}".strip()[:300]
     return _engine
 
 

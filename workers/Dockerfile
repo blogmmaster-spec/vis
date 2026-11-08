@@ -36,14 +36,40 @@ COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# Optional extras, best-effort by design. The OCR engine lets best-of-N rank text-intent
-# candidates by reading the lettering back instead of by edge energy. It is NOT worth
-# failing a 20-minute build over: if it will not install, the worker boots, reports
-# `text_check.enabled = false`, and ranks on the technical score exactly as before.
+# Optional extras, best-effort by design — but verified for real, because the first
+# version of this step verified nothing. `pytorch:*` is a *runtime* image with no libGL,
+# and rapidocr-onnxruntime declares `opencv-python`, whose wheel links against libGL. So
+# pip resolved happily, `import rapidocr_onnxruntime` raised
+# `libGL.so.1: cannot open shared object file`, and the trailing `||` turned a hard
+# failure into one log line: the worker booted reporting `text_check.enabled = false`
+# and quietly ranked text-intent candidates on edge energy again.
+#
+# Three fixes, applied together:
+#   1. cover the GL/glib libs the non-headless wheel wants (best effort, name varies);
+#   2. install `opencv-python-headless`, which needs none of them, so cv2 imports anyway;
+#   3. install rapidocr itself with `--no-deps` so pip cannot re-resolve opencv underneath
+#      us — nor numpy, which is a hard dependency of the diffusion stack and must win.
+#
+# And the check *constructs* the engine instead of importing the package: an import test
+# passes on a cv2 that nothing has touched yet, which is exactly how this survived a green
+# build. Still non-fatal — a 20-minute build should not die over an optional extra — but
+# the failure is now loud here and reported in `imotan.text_check.reason` at runtime.
+RUN set -e ; \
+    apt-get update ; \
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+      || apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 \
+      || echo "ocr: no GL runtime libs available; relying on headless opencv" ; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY requirements-optional.txt .
-RUN pip install -r requirements-optional.txt \
-    && python -c "import rapidocr_onnxruntime; print('ocr: rapidocr available')" \
-      || echo "ocr: rapidocr unavailable; text-intent ranking falls back to technical score"
+RUN if pip install -r requirements-optional.txt --no-deps \
+       && pip install "opencv-python-headless>=4.10" \
+       && pip install onnxruntime pyclipper shapely six pyyaml ; then \
+        python -c "from rapidocr_onnxruntime import RapidOCR; RapidOCR(); print('ocr: rapidocr ready')" \
+          || echo "OCR: INSTALLED BUT UNUSABLE; text-intent ranking falls back to technical score" ; \
+    else \
+        echo "OCR: INSTALL FAILED; text-intent ranking falls back to technical score" ; \
+    fi
 
 # int8 weight-only needs torchao. Three traps: a wrong torchao installs cleanly and then breaks
 # `import diffusers`; diffusers only enforces its version floor when the config is *constructed*;
