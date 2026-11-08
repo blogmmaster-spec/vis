@@ -36,6 +36,7 @@ WARMUP_DIMS = (256, 256)
 
 _pipe = None
 _active_precision = "unknown"
+_active_text_precision = "unknown"
 
 
 def _weights_ready(path: str) -> bool:
@@ -94,11 +95,12 @@ def _quantization_config():
 
     Returns None for bf16 (IMOTAN_DTYPE=bf16).
     """
-    global _active_precision
+    global _active_precision, _active_text_precision
 
     mode = os.environ.get("IMOTAN_DTYPE", "int8").strip().lower()
     if mode in ("bf16", "bfloat16", "fp16", "none"):
         _active_precision = "bf16"
+        _active_text_precision = "bf16"
         return None
     if mode not in ("int8", "8bit", "8-bit"):
         raise RuntimeError(f"IMOTAN_DTYPE must be int8 or bf16, got {mode!r}")
@@ -110,37 +112,48 @@ def _quantization_config():
     except Exception:
         print("[imotan] torchao not installed — falling back to bf16", flush=True)
         _active_precision = "bf16"
+        _active_text_precision = "bf16"
         return None
 
-    # Preferred: the current diffusers API. A config *object* wrapped in a quant mapping,
-    # targeting only the transformer. The old string form ("int8_weight_only") is legacy and
-    # raises a misleading "requires torchao >= 0.15" error even on a compatible build.
+    # Preferred: the current diffusers API. A config *object* wrapped in a quant mapping.
+    # The text encoder is Qwen3-4B (~8GB in bf16) and is the single largest resident item
+    # after the transformer, so it is quantised too unless IMOTAN_DTYPE_TEXT=bf16.
     try:
         from diffusers import PipelineQuantizationConfig, TorchAoConfig
         from torchao.quantization import Int8WeightOnlyConfig
         from torchao.quantization.granularity import PerGroup
 
-        config = PipelineQuantizationConfig(
-            quant_mapping={
-                "transformer": TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))
-            }
-        )
+        def _int8() -> TorchAoConfig:
+            return TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))
+
+        mapping = {"transformer": _int8()}
+
+        text_mode = os.environ.get("IMOTAN_DTYPE_TEXT", "int8").strip().lower()
+        if text_mode not in ("bf16", "bfloat16", "fp16", "none"):
+            mapping["text_encoder"] = _int8()
+            _active_text_precision = "int8-wo"
+        else:
+            _active_text_precision = "bf16"
+
+        config = PipelineQuantizationConfig(quant_mapping=mapping)
         _active_precision = "int8-wo"
         return config
     except Exception as exc:
         print(f"[imotan] modern torchao config unavailable: {exc}", flush=True)
 
-    # Fallback for older diffusers/torchao pairs.
+    # Fallback for older diffusers/torchao pairs — transformer only, encoder stays bf16.
     try:
         from diffusers import TorchAoConfig
 
         legacy = TorchAoConfig("int8_weight_only")
         _active_precision = "int8-wo"
+        _active_text_precision = "bf16"
         return legacy
     except Exception as exc:
         print(f"[imotan] legacy torchao config unavailable: {exc}", flush=True)
 
     _active_precision = "bf16"
+    _active_text_precision = "bf16"
     return None
 
 
@@ -368,6 +381,7 @@ def generate_payload(body: dict) -> dict:
             "intent": intent,
             "best_of": per_image,
             "precision": _precision_label(),
+            "text_precision": _active_text_precision if _active_text_precision != "unknown" else "bf16",
             "upscale": upscale_factor or None,
             "stages_available": {
                 "upscale": stages.upscaler_available(),
