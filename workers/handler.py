@@ -117,11 +117,10 @@ def _quantization_config():
 
     # Preferred: the current diffusers API. A config *object* wrapped in a quant mapping.
     #
-    # Only the transformer is quantised here. Adding `text_encoder` to this mapping makes
-    # `from_pretrained` die inside huggingface_hub argument validation (the component is a
-    # transformers model and diffusers re-enters the hub loader for it), which crash-loops the
-    # worker. Quantising the encoder needs a separate path — load it with
-    # transformers.TorchAoConfig and assign it, rather than listing it in this mapping.
+    # Only the transformer goes through the pipeline's loader. The text encoder is a
+    # transformers model, and routing it through this mapping crashes `from_pretrained`:
+    # transformers' quantizer expects fields diffusers' config does not have. It is quantised
+    # afterwards by `_quantise_text_encoder()` instead, which keeps the loader path clean.
     try:
         from diffusers import PipelineQuantizationConfig, TorchAoConfig
         from torchao.quantization import Int8WeightOnlyConfig
@@ -160,7 +159,7 @@ def _load():
     The warmup is not optional. Without it the first customer request pays for CUDA
     kernel autotuning, and FlashBoot has no warm process state to snapshot.
     """
-    global _pipe
+    global _pipe, _active_precision, _active_text_precision
     if _pipe is not None:
         return _pipe
 
@@ -175,8 +174,24 @@ def _load():
     if quant is not None:
         kwargs["quantization_config"] = quant
 
-    pipe = Flux2KleinPipeline.from_pretrained(resolved, **kwargs).to("cuda")
+    try:
+        pipe = Flux2KleinPipeline.from_pretrained(resolved, **kwargs).to("cuda")
+    except Exception as exc:
+        # A bad quantization config must never be able to keep the endpoint down. Retry plain:
+        # slower and larger, but serving. Every prompt below this point reports bf16 honestly.
+        if "quantization_config" not in kwargs:
+            raise
+        print(f"[imotan] quantised load failed ({exc}); retrying at bf16", flush=True)
+        kwargs.pop("quantization_config")
+        _active_precision = "bf16"
+        _active_text_precision = "bf16"
+        pipe = Flux2KleinPipeline.from_pretrained(resolved, **kwargs).to("cuda")
+
     pipe.set_progress_bar_config(disable=True)
+
+    # Quantise the encoder before warmup, so the warmup run proves the quantised encoder
+    # actually produces usable embeddings rather than failing at the first customer request.
+    _quantise_text_encoder(pipe)
 
     # Warm the kernels so the first real request is not the slow one.
     pipe(
@@ -192,11 +207,47 @@ def _load():
     _report_components(pipe)
     _report_vram("after load")
     print(
-        f"[imotan] loaded {MODEL_ID} ({'int8 weight-only' if quant else 'bf16'}) "
-        f"and warmed up in {time.time() - started:.1f}s",
+        f"[imotan] loaded {MODEL_ID} (transformer {_precision_label()}, "
+        f"text_encoder {_active_text_precision}) and warmed up in {time.time() - started:.1f}s",
         flush=True,
     )
     return _pipe
+
+
+def _quantise_text_encoder(pipe) -> None:
+    """Quantise the text encoder in place, after the pipeline is loaded.
+
+    torchao's `quantize_()` takes any nn.Module, so this avoids transformers' quantizer path
+    entirely — that path is what crashed `from_pretrained` on a config-type mismatch. Running
+    after load also means a failure here cannot prevent the worker from booting: the pipeline
+    is already in VRAM, so the worst case is an encoder left at bf16.
+
+    The text encoder is Qwen3-4B (~7.5GB in bf16) and is the largest resident component, so
+    this is the single biggest memory win available.
+    """
+    global _active_text_precision
+
+    mode = os.environ.get("IMOTAN_DTYPE_TEXT", "int8").strip().lower()
+    if mode in ("bf16", "bfloat16", "fp16", "none"):
+        _active_text_precision = "bf16"
+        return
+
+    encoder = getattr(pipe, "text_encoder", None)
+    if encoder is None:
+        _active_text_precision = "bf16"
+        return
+
+    try:
+        import torch
+        from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+        quantize_(encoder, Int8WeightOnlyConfig())
+        torch.cuda.empty_cache()
+        print("[imotan] text encoder quantised to int8", flush=True)
+        _active_text_precision = "int8-wo"
+    except Exception as exc:
+        print(f"[imotan] text encoder quantisation skipped: {exc}", flush=True)
+        _active_text_precision = "bf16"
 
 
 def _component_bytes(module) -> tuple[float, str]:
