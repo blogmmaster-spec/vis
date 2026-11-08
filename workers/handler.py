@@ -116,27 +116,24 @@ def _quantization_config():
         return None
 
     # Preferred: the current diffusers API. A config *object* wrapped in a quant mapping.
-    # The text encoder is Qwen3-4B (~8GB in bf16) and is the single largest resident item
-    # after the transformer, so it is quantised too unless IMOTAN_DTYPE_TEXT=bf16.
+    #
+    # Only the transformer is quantised here. Adding `text_encoder` to this mapping makes
+    # `from_pretrained` die inside huggingface_hub argument validation (the component is a
+    # transformers model and diffusers re-enters the hub loader for it), which crash-loops the
+    # worker. Quantising the encoder needs a separate path — load it with
+    # transformers.TorchAoConfig and assign it, rather than listing it in this mapping.
     try:
         from diffusers import PipelineQuantizationConfig, TorchAoConfig
         from torchao.quantization import Int8WeightOnlyConfig
         from torchao.quantization.granularity import PerGroup
 
-        def _int8() -> TorchAoConfig:
-            return TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))
-
-        mapping = {"transformer": _int8()}
-
-        text_mode = os.environ.get("IMOTAN_DTYPE_TEXT", "int8").strip().lower()
-        if text_mode not in ("bf16", "bfloat16", "fp16", "none"):
-            mapping["text_encoder"] = _int8()
-            _active_text_precision = "int8-wo"
-        else:
-            _active_text_precision = "bf16"
-
-        config = PipelineQuantizationConfig(quant_mapping=mapping)
+        config = PipelineQuantizationConfig(
+            quant_mapping={
+                "transformer": TorchAoConfig(Int8WeightOnlyConfig(granularity=PerGroup(128)))
+            }
+        )
         _active_precision = "int8-wo"
+        _active_text_precision = "bf16"
         return config
     except Exception as exc:
         print(f"[imotan] modern torchao config unavailable: {exc}", flush=True)
