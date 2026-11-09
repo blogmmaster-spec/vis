@@ -188,6 +188,20 @@ retained while half the weight bytes move.
 | `upscale` | `2`, `4`, `true` | `true` = 2×; skipped if unavailable |
 | `seed` | integer | deterministic per candidate |
 | `style` | string | folded into the prompt, not sent upstream |
+| `include_images` | `true` (default), `false` | `false` drops `data[].b64_json` and keeps the whole `imotan` report — see below |
+
+**Diagnosing without the pixels.** A PNG's base64 is megabytes, and it is returned first, so
+every diagnostic in the response sits below a wall of it — which makes the report unreadable
+in a console or a log. `"include_images": false` returns the same `imotan` block with
+`data[]` reduced to `media_type`/`revised_prompt` and `imotan.images_omitted: true`, so an
+empty `data` cannot be mistaken for a failed generation:
+
+```json
+{ "prompt": "A banner with a \"Get Started for Free\" button", "intent": "text", "n": 1, "include_images": false }
+```
+
+That is the shape to read candidate scores and `text_check.coverage` from when a text
+request comes back wrong.
 
 **Why JPEG is the default.** It is the format every consumer, print pipeline and legacy client
 already accepts — the least surprising thing to hand back when nobody asked for a specific

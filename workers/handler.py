@@ -414,6 +414,12 @@ def generate_payload(body: dict) -> dict:
     if fmt not in ("png", "jpeg", "jpg", "webp", "svg"):
         return {"error": {"code": "invalid_request", "message": f"unsupported format: {fmt}"}}
 
+    # A PNG's base64 is megabytes, so every diagnostic in the response sits below a wall of
+    # it. `include_images: false` returns the same report without the pixels -- the only
+    # practical way to read `selection` in RunPod's console or in a log. Opt-in, because a
+    # caller that asks for images and gets none would be a silent, useless success.
+    include_images = str(body.get("include_images", True)).strip().lower() not in ("false", "0", "no")
+
     upscale_factor = 0
     if body.get("upscale"):
         try:
@@ -496,13 +502,13 @@ def generate_payload(body: dict) -> dict:
         else:
             payload, mime = encode(best_image, fmt, DEFAULT_QUALITY)
 
-        images.append(
-            {
-                "b64_json": base64.b64encode(payload).decode("ascii"),
-                "media_type": mime,
-                "revised_prompt": prompt,
-            }
-        )
+        entry = {
+            "media_type": mime,
+            "revised_prompt": prompt,
+        }
+        if include_images:
+            entry["b64_json"] = base64.b64encode(payload).decode("ascii")
+        images.append(entry)
         diagnostics.append(
             {
                 "index": index,
@@ -536,6 +542,8 @@ def generate_payload(body: dict) -> dict:
             "format": fmt,
             "intent": intent,
             "best_of": per_image,
+            # Loud, because an empty `data` would otherwise look like a generation failure.
+            "images_omitted": not include_images,
             "precision": _precision_label(),
             "text_precision": _active_text_precision if _active_text_precision != "unknown" else "bf16",
             "prompt_expansion": expansion,
