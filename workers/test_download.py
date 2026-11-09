@@ -62,10 +62,19 @@ def main() -> int:
         shutil.rmtree(SCRATCH, ignore_errors=True)
 
     print()
+    # The root single-file checkpoint is a 7.2GB duplicate of `transformer/`; matching it
+    # cost that much on every cold boot. Cheap to assert, invisible if it regresses.
+    bare = "*.safetensors"
+    covered = bare in dw.ALLOW_PATTERNS
+    print("{0} root duplicate excluded  '*.safetensors' in ALLOW_PATTERNS: {1} (want False)".format(
+        "FAIL" if covered else "ok  ", covered))
+    if covered:
+        failures += 1
+
     if failures:
-        print(f"{failures} of {len(CASES)} cases failed")
+        print(f"{failures} of {len(CASES) + 1} cases failed")
         return 1
-    print(f"{len(CASES)} cases passed")
+    print(f"{len(CASES) + 1} cases passed")
     return 0
 
 

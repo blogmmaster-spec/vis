@@ -54,11 +54,11 @@ If the checkpoint repo is ever gated, pass `--build-arg HF_TOKEN=...`.
 | | Image | First boot on a host | Later boots | Push size |
 |---|---|---|---|---|
 | **A. Baked** | ~20GB | pull 20GB | fast, local NVMe | 20GB |
-| **B. Network volume** | ~8GB | pull 8GB + one 13GB download into the mount | mounts the cache | 8GB |
-| **C. Download every boot** | ~8GB | pull + 13GB download | **13GB again, every new host** | 8GB |
+| **B. Network volume** | ~8GB | pull 8GB + one ~16GB download into the mount | mounts the cache | 8GB |
+| **C. Download every boot** | ~8GB | pull + ~16GB download | **~16GB again, every new host** | 8GB |
 
 **Do not ship C.** With `active workers: 0`, every new host re-downloads the weights and your
-first request of the day waits for all 13GB. It only looks acceptable after FlashBoot has
+first request of the day waits for all ~16GB. It only looks acceptable after FlashBoot has
 warmed a host once.
 
 Choose **B** when the image push is the bottleneck (slow uplink) or when you want to iterate on
@@ -71,7 +71,7 @@ the Dockerfile without re-uploading weights each time:
 4. Pin the endpoint to that data center. A volume outside the GPUs' data center cannot mount.
 
 `IMOTAN_ALLOW_DOWNLOAD=0` disables the runtime download and fails fast instead — use it on the
-baked image so a mis-set path surfaces as an error rather than a 13GB surprise.
+baked image so a mis-set path surfaces as an error rather than a ~16GB surprise.
 
 A download is flagged before it starts (`.imotan-weights-partial`) and stamped when it
 finishes (`.imotan-weights-complete`). Without that, a worker killed at 17 of 19 files leaves
@@ -276,6 +276,11 @@ Quote every string you want rendered, and nothing else:
   A correctly spelt string wrapped over two lines still scores 1.0 — the lines are also
   scored joined together, and words are matched against a budget so one line cannot claim
   the same word twice.
+- `text_check.lines` is what the detector actually read, capped at 8 lines. Coverage alone
+  cannot tell "the model cannot spell" from "the model wrote a more likely phrase instead",
+  and those are different fixes — a different prompt versus a different pipeline. A measured
+  four-candidate run on `"Get Sorted for Free"` scored 0.75 on every sample, i.e. one word of
+  four; only the lines say which word was substituted.
 - `intent: "text"` also spends the render budget on spelling. 4-step klein misspells
   per-sample, not per-prompt — the same seedless prompt yields "Sturted", "Sturtere",
   "Stated" — so the only font-free lever is width: `IMOTAN_TEXT_BEST_OF` (default `4`)

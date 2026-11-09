@@ -35,9 +35,15 @@ COMPLETE_MARKER = ".imotan-weights-complete"
 PARTIAL_MARKER = ".imotan-weights-partial"
 
 # Everything the pipeline needs, minus training/optimiser state.
+#
+# Deliberately no bare `*.safetensors`: the repo root also carries
+# `flux-2-klein-4b.safetensors` (7.2GB), a single-file copy of the transformer meant for
+# `from_single_file` loading, which this pipeline never uses — it loads the component
+# directories from `model_index.json`. Matching it cost 7.2GB of every download: a measured
+# boot logged `weights ready in 30.7s, 22.1GB`, and the components alone are ~16GB
+# (transformer 7.2 + text_encoder 8.0 + vae 0.2).
 ALLOW_PATTERNS = [
     "*.json",
-    "*.safetensors",
     "*.txt",
     "*.model",
     "tokenizer*",

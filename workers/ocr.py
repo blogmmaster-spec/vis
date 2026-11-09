@@ -218,4 +218,10 @@ def score(image: Image.Image, expected: list[str]) -> dict[str, float] | None:
     if _get_engine() is None:
         return None
     lines = read_lines(image)
-    return score_lines(lines, expected)
+    reading = score_lines(lines, expected)
+    # What the detector actually read, not just how well it matched. A coverage of 0.75 says
+    # one word of four is wrong and nothing else: it cannot tell "the model cannot spell"
+    # from "the model wrote the phrase it expected to write". Reading the lines back is the
+    # difference between fixing the prompt and fixing the model, and it costs one list.
+    reading["lines"] = [line[:120] for line in lines[:8]]
+    return reading
