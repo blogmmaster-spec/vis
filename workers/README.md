@@ -73,6 +73,16 @@ the Dockerfile without re-uploading weights each time:
 `IMOTAN_ALLOW_DOWNLOAD=0` disables the runtime download and fails fast instead — use it on the
 baked image so a mis-set path surfaces as an error rather than a 13GB surprise.
 
+A download is flagged before it starts (`.imotan-weights-partial`) and stamped when it
+finishes (`.imotan-weights-complete`). Without that, a worker killed at 17 of 19 files leaves
+enough `.safetensors` behind for the next boot to call the directory ready, and the failure
+moves to the loader where it reads as a broken model. With it, an interrupted boot is
+recognised and resumed — which only helps if the directory outlives the worker, i.e. on a
+mounted volume. Two more things make the download survivable inside a request's execution
+window: `HF_TOKEN` lifts the Hub's anonymous rate limit, and `hf-transfer` (in requirements)
+downloads many chunks at once instead of one file at a time. If hf_transfer errors, the
+download retries on the plain client rather than failing the boot.
+
 `HF_HUB_OFFLINE` is set by the handler **after** the weights resolve, so a baked worker never
 touches the network while a volume-backed one still can.
 
@@ -283,7 +293,8 @@ Quote every string you want rendered, and nothing else:
 ### Tests
 
 ```bash
-python3 workers/test_ocr.py     # 12 cases, no GPU, no OCR engine, needs pillow only
+python3 workers/test_ocr.py       # 12 cases, no GPU, no OCR engine, needs pillow only
+python3 workers/test_download.py  # 7 cases, no GPU, no network
 ```
 
 The suite pins `score_lines` against detector output that actually shipped — the

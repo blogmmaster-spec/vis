@@ -19,6 +19,7 @@ import runpod
 import expander
 import ocr
 import stages
+from download_weights import download, is_complete
 from pipeline import (
     build_prompt,
     check_prompt,
@@ -51,13 +52,8 @@ _active_text_precision = "unknown"
 
 
 def _weights_ready(path: str) -> bool:
-    """True when `path` holds at least one checkpoint shard."""
-    if not os.path.isdir(path):
-        return False
-    for _root, _dirs, files in os.walk(path):
-        if any(name.endswith(".safetensors") for name in files):
-            return True
-    return False
+    """True when `path` holds a complete checkpoint. See `is_complete`."""
+    return is_complete(path)
 
 
 def _ensure_weights() -> str:
@@ -81,18 +77,7 @@ def _ensure_weights() -> str:
 
     print(f"[imotan] no weights at {model_path} — downloading once", flush=True)
     os.environ.pop("HF_HUB_OFFLINE", None)
-
-    from huggingface_hub import snapshot_download
-
-    from download_weights import ALLOW_PATTERNS, REPO_ID
-
-    os.makedirs(model_path, exist_ok=True)
-    snapshot_download(
-        repo_id=os.environ.get("HF_REPO", REPO_ID),
-        local_dir=model_path,
-        token=os.environ.get("HF_TOKEN") or None,
-        allow_patterns=ALLOW_PATTERNS,
-    )
+    download(model_path)
     os.environ["HF_HUB_OFFLINE"] = "1"
     return model_path
 

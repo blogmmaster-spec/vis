@@ -6,6 +6,11 @@ transformers>=4.44
 accelerate>=1.0
 safetensors
 huggingface_hub>=0.26
+# Multi-threaded Rust downloader for the 13GB checkpoint. Without it the boot pulls one
+# file at a time, which is slow enough that a cold worker can lose its race with the
+# request's execution window and be killed mid-transfer. download_weights.py enables it by
+# default and retries on the plain client if it fails.
+hf-transfer>=0.1.8
 pillow>=10.4
 numpy>=1.26
 runpod>=1.7
