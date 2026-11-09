@@ -259,6 +259,18 @@ Quote every string you want rendered, and nothing else:
   to draw it — that is the only wrapped-guarantee path, at the cost of flat type rather
   than klein's sculpted lettering.
 
+### Tests
+
+```bash
+python3 workers/test_ocr.py     # 12 cases, no GPU, no OCR engine, needs pillow only
+```
+
+The suite pins `score_lines` against detector output that actually shipped — the
+"Get Sturted for Free" button, the headline-and-button frame where both copies are
+misspelt — plus the shapes that are easy to regress: a correct string split over two
+lines, a correct string drawn twice, an invented headline, and no text at all. CI runs
+it before building, so a scoring regression never reaches a container.
+
 ---
 
 ## Stages
