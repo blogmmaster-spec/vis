@@ -245,6 +245,13 @@ Quote every string you want rendered, and nothing else:
 ```
 
 - Quoted spans are the contract. `text_check.expected` echoes them back.
+- A prompt that quotes lettering is never sent through prompt expansion. The expander is
+  instructed to emit "no quotation marks", so a rewrite removes the exact markers that
+  `build_prompt` and the scorer read: `intent` falls back to photo, the *only the text "…",
+  no headline, sharp legible spelling* suffix is never appended, and the model invents
+  lettering freely. That used to depend on whether the 1.5B rewrite passed validation, so
+  the same prompt spelled correctly or not depending on the expander's mood. The response
+  says when this happened: `prompt_expansion.status: "skipped"`, `reason: "quoted_text"`.
 - For `intent: "text"` the shaping suffix stops being a compliment ("legible text") and
   becomes a constraint: *only the text "…", no other text, no additional words, no headline*.
   Unconstrained, klein invents a headline and misspells it.

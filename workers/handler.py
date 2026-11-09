@@ -432,24 +432,34 @@ def generate_payload(body: dict) -> dict:
     #
     # The expander runs on the caller's words only, before `build_prompt` appends the
     # technical suffix, so the two never compete over the same vocabulary.
+    #
+    # A quoted string is a contract, and a paraphrase is the one thing guaranteed to break
+    # one: the expander rewrites the sentence the CTA sits in, and whatever it stresses —
+    # "bold 3D lettering", "headline" — outweighs a suffix asking for plain legible type.
+    # Worse, `expected` is read back out of the prompt to score the result, so an expander
+    # that edits the quote would make the scorer verify a string nobody asked for. So
+    # prompts that quote lettering are never rewritten: `wanted` comes from the caller.
+    wanted = expected_strings(raw_prompt)
     expansion = None
-    if expander.enabled():
+    if expander.enabled() and not wanted:
         expanded, expansion_status = expander.expand(raw_prompt)
         expansion = {"status": expansion_status, "used": expanded != raw_prompt}
         if expanded != raw_prompt:
             raw_prompt = expanded
+    elif wanted:
+        expansion = {"status": "skipped", "reason": "quoted_text", "used": False}
 
     prompt, intent = build_prompt(raw_prompt)
     if body.get("style"):
         prompt = f"{prompt}, {str(body['style']).strip()}"
 
-    # Only text-intent prompts have lettering worth verifying. `prompt` already carries
-    # the quoted strings — the shaping suffix re-states the caller's own quotes and never
-    # invents one — so a single extraction serves both the scorer and the response.
+    # Only text-intent prompts have lettering worth verifying. `prompt` still carries the
+    # caller's own quotes verbatim — the shaping suffix re-states them and never invents
+    # one — so a single extraction serves both the scorer and the response.
     #
     # Resolved before the budget because quoted lettering is precisely what decides how
     # many candidates to draw.
-    wanted = expected_strings(prompt) if intent == "text" else []
+    wanted = wanted if intent == "text" else []
     text_mode = bool(wanted)
 
     base_seed = int(body.get("seed") if body.get("seed") is not None else time.time_ns() % 2**31)
