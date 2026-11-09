@@ -35,6 +35,14 @@ DEFAULT_FORMAT = os.environ.get("IMOTAN_FORMAT", "jpeg")
 DEFAULT_QUALITY = int(os.environ.get("IMOTAN_QUALITY", "90"))
 BEST_OF = max(1, min(int(os.environ.get("IMOTAN_BEST_OF", "2")), 3))
 MAX_CANDIDATES = 6
+# Text requests are sampled wider than everything else. The measured failure is not a
+# garbled headline but a single wrong letter ("Get Sturted for Free" at 4 steps), and
+# that kind of error is per-sample noise rather than a property of the prompt — the
+# model produced "Sturted", "Sturtere" and "Stated" for the same button. Spelling is
+# only recoverable by drawing enough candidates that one lands correctly, so the pool
+# is wider and the ranking (see `_agreement` in ocr.py) can actually prefer it.
+TEXT_BEST_OF = max(1, min(int(os.environ.get("IMOTAN_TEXT_BEST_OF", "4")), 8))
+TEXT_MAX_CANDIDATES = 16
 WARMUP_DIMS = (256, 256)
 
 _pipe = None
@@ -429,20 +437,25 @@ def generate_payload(body: dict) -> dict:
     if body.get("style"):
         prompt = f"{prompt}, {str(body['style']).strip()}"
 
+    # Only text-intent prompts have lettering worth verifying. `prompt` already carries
+    # the quoted strings — the shaping suffix re-states the caller's own quotes and never
+    # invents one — so a single extraction serves both the scorer and the response.
+    #
+    # Resolved before the budget because quoted lettering is precisely what decides how
+    # many candidates to draw.
+    wanted = expected_strings(prompt) if intent == "text" else []
+    text_mode = bool(wanted)
+
     base_seed = int(body.get("seed") if body.get("seed") is not None else time.time_ns() % 2**31)
 
-    budget = MAX_CANDIDATES
-    per_image = max(1, min(BEST_OF, budget // count))
+    budget = TEXT_MAX_CANDIDATES if text_mode else MAX_CANDIDATES
+    cap = TEXT_BEST_OF if text_mode else BEST_OF
+    per_image = max(1, min(cap, budget // count))
 
     pipe = _load()
     created = int(time.time())
     images = []
     diagnostics = []
-
-    # Only text-intent prompts have lettering worth verifying. `prompt` already carries
-    # the quoted strings — the shaping suffix re-states the caller's own quotes and never
-    # invents one — so a single extraction serves both the scorer and the response.
-    wanted = expected_strings(prompt) if intent == "text" else []
 
     for index in range(count):
         candidates = []

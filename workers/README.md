@@ -111,6 +111,7 @@ a warm process to snapshot; without it every cold start pays the full load.
 | `IMOTAN_EXPAND` | *(off)* | `1` enables the prompt-expansion stage |
 | `IMOTAN_EXPAND_MODEL` | `Qwen/Qwen2.5-1.5B-Instruct` | expander weights; int8 loaded on first use |
 | `IMOTAN_BEST_OF` | `2` | candidates per requested image, capped at 3 |
+| `IMOTAN_TEXT_BEST_OF` | `4` | candidates per image when the prompt quotes text to render; capped at 8, inside a 16-render budget |
 | `IMOTAN_FORMAT` | `jpeg` | default when the request omits `format` |
 | `IMOTAN_QUALITY` | `90` | JPEG/WebP quality |
 | `IMOTAN_UPSCALE_MODEL` | `/models/realesrgan/RealESRGAN_x4plus.pth` | baked |
@@ -237,8 +238,26 @@ Quote every string you want rendered, and nothing else:
   (lettering it was never asked for) instead of on edge energy alone, so a clean frame
   outranks a sharper one with a garbled headline. `text_check.enabled` says whether that
   happened; `false` means the technical score alone decided.
+- `coverage` is a **word-exact** measure, not a character edit distance. A string can differ
+  by two characters and still be wrong ("get sturted for free" scores 0.750, not 0.947):
+  the per-line character ratio is capped by the share of the expected words that actually
+  appear, so a misspelt word cannot hide behind the length of the rest of the line.
+  A correctly spelt string wrapped over two lines still scores 1.0 — the lines are also
+  scored joined together, and words are matched against a budget so one line cannot claim
+  the same word twice.
+- `intent: "text"` also spends the render budget on spelling. 4-step klein misspells
+  per-sample, not per-prompt — the same seedless prompt yields "Sturted", "Sturtere",
+  "Stated" — so the only font-free lever is width: `IMOTAN_TEXT_BEST_OF` (default `4`)
+  candidates per image, within a hard ceiling of 16 renders per request. This
+  is why a text request is slower than a photo request. Set `IMOTAN_TEXT_BEST_OF=1` to
+  spend nothing on retries and take the first sample, or `IMOTAN_BEST_OF=1` to disable
+  selection everywhere.
 - Short strings win. Long unquoted copy is where 4-step klein fails, and that is a model
   limit no suffix fixes.
+- Sampling raises the odds; it does not guarantee spelling. If a caller needs the string
+  pixel-exact every time, composite the type over the render instead of asking the model
+  to draw it — that is the only wrapped-guarantee path, at the cost of flat type rather
+  than klein's sculpted lettering.
 
 ---
 

@@ -10,7 +10,7 @@ crisp and contrasty as correct lettering.
 This module reads the lettering back out and scores it against the strings the
 caller actually asked for. Two things fall out:
 
-  * `coverage` — did the requested strings survive?
+  * `coverage` — did the requested strings survive, spelt correctly?
   * `extra`    — how much *unrequested* text is on the image?
 
 The second is what the 4-step klein model keeps failing: given a banner prompt it
@@ -117,6 +117,29 @@ def _best_ratio(candidate: str, expected: str) -> float:
     return ratio
 
 
+def _agreement(candidate: str, expected: str) -> float:
+    """How much of `expected` is present in `candidate` *correctly*, in 0..1.
+
+    Character similarity alone cannot judge short strings. On a 19-character CTA,
+    dropping one letter and swapping another is two edits — `SequenceMatcher` calls
+    that 0.947, so a button reading "Get Sturted for Free" scored as a near pass and
+    was shipped. The caller got an ad with a typo in it and a receipt saying 95%.
+
+    A word is either spelt right or it is not, so that is the unit for short strings:
+    agreement is capped by the share of expected words that appear verbatim. The
+    character ratio is still taken, because it is what tolerates OCR noise on long
+    copy, but it can only lower the result.
+    """
+    if not candidate or not expected:
+        return 0.0
+    want = expected.split()
+    if not want:
+        return 0.0
+    have = set(candidate.split())
+    spelt = sum(1 for word in want if word in have) / len(want)
+    return min(_best_ratio(candidate, expected), spelt)
+
+
 def score_lines(
     lines: list[str],
     expected: list[str],
@@ -125,7 +148,7 @@ def score_lines(
 
     Returns `{"coverage", "extra", "score"}`, all in 0..1:
 
-      coverage — mean best-match ratio across the expected strings
+      coverage — mean best-match agreement across the expected strings
       extra    — share of detected lines that match nothing expected
       score    — 0.75 * coverage + 0.25 * (1 - extra)
     """
@@ -138,19 +161,48 @@ def score_lines(
         # Nothing to verify against: don't pretend, report a neutral reading.
         return {"coverage": 0.0, "extra": 0.0, "score": 0.0}
 
-    ratios: list[float] = []
-    matched: set[int] = set()
-    for target in want:
-        best, best_index = 0.0, -1
-        for index, line in enumerate(got):
-            value = _best_ratio(line, target)
-            if value > best:
-                best, best_index = value, index
-        ratios.append(best)
-        if best >= 0.72 and best_index >= 0:
-            matched.add(best_index)
+    # Cover two ways the same text can arrive: one line, or a phrase the detector
+    # split across two. Without the join, a correctly spelt string broken in half
+    # scores like a string with a missing word.
+    haystack = got + ([" ".join(got)] if len(got) > 1 else [])
 
+    ratios = ([max(_agreement(text, target) for text in haystack) for target in want]
+              if haystack else [0.0] * len(want))
     coverage = sum(ratios) / len(ratios)
+
+    # Which lines are doing requested work, and which are text nobody asked for.
+    #
+    # The requested words are a *budget*, not a pattern to match: "Get Started" plus
+    # "for Free" on two lines is one requested string, so both lines are accounted for
+    # and a correct wrap is not billed as invented. A second, correctly spelt copy of
+    # those same words then finds the budget spent and does count as extra — which is
+    # what catches klein repeating the CTA as a headline over its own button.
+    #
+    # A line carrying words outside the budget is a misspelt attempt rather than an
+    # invention, so similarity may still claim it; `coverage` is what punishes the
+    # spelling, and charging it twice would double-count one defect.
+    budget: dict[str, int] = {}
+    for target in want:
+        for word in target.split():
+            budget[word] = budget.get(word, 0) + 1
+    vocabulary = set(budget)
+
+    matched: set[int] = set()
+    for index, line in enumerate(got):
+        words = line.split()
+        if all(budget.get(word, 0) >= words.count(word) for word in set(words)):
+            for word in words:
+                budget[word] -= 1
+            matched.add(index)
+        elif (
+            any(word not in vocabulary for word in words)
+            and max(_best_ratio(line, target) for target in want) >= 0.72
+        ):
+            # Words the caller never asked for, shaped closely enough to be an attempt
+            # at theirs. The `any(... not in vocabulary)` guard is what keeps a second,
+            # perfectly spelt copy out of here: it has no unfamiliar word, so it is a
+            # duplicate and the spent budget should stand.
+            matched.add(index)
     extra = (len(got) - len(matched)) / len(got) if got else 0.0
     extra = max(0.0, min(1.0, extra))
 
