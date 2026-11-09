@@ -56,6 +56,26 @@ def _weights_ready(path: str) -> bool:
     return is_complete(path)
 
 
+def _go_offline() -> None:
+    """Take the worker off the network for real.
+
+    Setting `HF_HUB_OFFLINE` in the environment is not enough. `huggingface_hub` reads that
+    variable into `constants` when it is first imported, and this module imports `diffusers`
+    (through `pipeline`) at load time — before `_ensure_weights` runs. Measured consequence: a
+    worker that had just logged offline mode still fetched Qwen2.5-1.5B (3GB) from the Hub
+    inside its first expanded request, because the flag landed in the environment after the
+    constant had already been read. Set both, and keep the environment value for any child
+    process.
+    """
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        import huggingface_hub.constants as constants
+
+        constants.HF_HUB_OFFLINE = True
+    except Exception:
+        pass
+
+
 def _ensure_weights() -> str:
     """Resolve MODEL_PATH, downloading once if it is empty.
 
@@ -65,11 +85,12 @@ def _ensure_weights() -> str:
       volume. `IMOTAN_ALLOW_DOWNLOAD=0` disables this and fails fast instead.
 
     HF_HUB_OFFLINE is set only *after* the weights resolve, so a baked worker never
-    touches the network while a volume-backed one still can.
+    touches the network while a volume-backed one still can. See `_go_offline` for why the
+    environment variable alone did not achieve that.
     """
     model_path = os.environ.get("MODEL_PATH", "/models/flux2-klein-4b")
     if _weights_ready(model_path):
-        os.environ["HF_HUB_OFFLINE"] = "1"
+        _go_offline()
         return model_path
 
     if os.environ.get("IMOTAN_ALLOW_DOWNLOAD", "1") != "1":
@@ -78,7 +99,7 @@ def _ensure_weights() -> str:
     print(f"[imotan] no weights at {model_path} — downloading once", flush=True)
     os.environ.pop("HF_HUB_OFFLINE", None)
     download(model_path)
-    os.environ["HF_HUB_OFFLINE"] = "1"
+    _go_offline()
     return model_path
 
 

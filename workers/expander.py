@@ -10,7 +10,9 @@ decides what gets drawn.
 
 The stage is opt-in (`IMOTAN_EXPAND=1`), loads lazily on first use, quantises to int8
 weight-only to match the rest of the worker, and never raises: any failure returns the original
-prompt so a generation request can only lose polish, never fail.
+prompt so a generation request can only lose polish, never fail. Its weights are **baked into
+the image** and loaded from disk only — see `model_path()` for why lazily fetching them was a
+defect rather than a shortcut.
 
 Because a 1.5B model will cheerfully invent subjects nobody asked for, output is validated
 rather than trusted — see `_accept()`. A rejected rewrite silently falls back to the original.
@@ -78,11 +80,24 @@ def model_id() -> str:
     return os.environ.get("IMOTAN_EXPAND_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
+def model_path() -> str:
+    """Local directory holding the expander weights.
+
+    Baked into the image at build time, and loaded from disk with `local_files_only=True`.
+    Fetching it lazily was a real defect: a worker that had already logged "HF_HUB_OFFLINE"
+    still pulled Qwen2.5-1.5B from the Hub — 3GB — inside the first request that triggered
+    expansion. A deployment whose contract is "pull the image, run it" cannot have a request
+    that quietly reaches the internet for a third of the model.
+    """
+    return os.environ.get("IMOTAN_EXPAND_PATH", "/models/expander").strip() or "/models/expander"
+
+
 def status() -> dict:
     """Diagnostics for the response payload and the boot log."""
     return {
         "enabled": enabled(),
         "model": model_id(),
+        "path": model_path(),
         "loaded": _model is not None,
         "precision": _precision,
         "failed": _failed,
@@ -108,8 +123,22 @@ def _load() -> bool:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            tokenizer = AutoTokenizer.from_pretrained(model_id())
-            model = AutoModelForCausalLM.from_pretrained(model_id(), dtype=torch.bfloat16)
+            path = model_path()
+            if not os.path.isdir(path):
+                # Not an exception path: a build that skipped the bake should disable the
+                # stage, not reach for the network and not fail the request.
+                print(
+                    f"[imotan] expander disabled: no weights at {path} "
+                    "(baked by the image build; a slim image without them cannot expand)",
+                    flush=True,
+                )
+                _failed = True
+                return False
+
+            tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                path, dtype=torch.bfloat16, local_files_only=True
+            )
             model.to("cuda")
 
             # int8 weight-only, same treatment as the transformer and text encoder. A 1.5B
@@ -264,6 +293,13 @@ def expand(prompt: str) -> tuple[str, str]:
             print(f"[imotan] expansion rejected: {reason}", flush=True)
             return prompt, f"rejected: {reason}"
 
+        # Log acceptance too. Only rejections were logged, which meant a successful expansion
+        # left no trace at all — the one case you most want to see worked was the one case the
+        # log stayed silent about. Lengths rather than text: the prompt may be a customer's.
+        print(
+            f"[imotan] expansion accepted: {len(prompt)} -> {len(reply)} chars",
+            flush=True,
+        )
         return reply, "expanded"
     except Exception as exc:
         print(f"[imotan] expansion failed: {exc}", flush=True)

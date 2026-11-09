@@ -19,6 +19,7 @@ ARG HF_TOKEN=""
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MODEL_PATH=/models/flux2-klein-4b \
+    IMOTAN_EXPAND_PATH=/models/expander \
     IMOTAN_DTYPE=int8 \
     IMOTAN_FORMAT=jpeg \
     IMOTAN_BEST_OF=2 \
@@ -107,6 +108,10 @@ ENV IMOTAN_BUILD_SHA=$GIT_SHA
 # image rather than a missing COPY line. requirements.txt is excluded by the pattern being *.py.
 COPY *.py ./
 
+# The compositor's font is data, not code, so `*.py` does not carry it. Bundled rather than
+# fetched at runtime: type that arrives over the network is type that can fail to arrive.
+COPY fonts/ ./fonts/
+
 # Bake the checkpoint only when asked. HF_HUB_OFFLINE is deliberately NOT set here — it
 # would block this very download. handler.py sets it after the weights resolve.
 RUN if [ "$BAKE_WEIGHTS" = "1" ]; then \
@@ -114,6 +119,12 @@ RUN if [ "$BAKE_WEIGHTS" = "1" ]; then \
     else \
         mkdir -p /models/flux2-klein-4b && echo "weights not baked; expecting a volume or a runtime download"; \
     fi
+
+# Bake the prompt-expansion model unconditionally (~3GB), not with BAKE_WEIGHTS. It is a
+# *serving-path* download: fetched lazily it arrives during a customer request, 3GB of it,
+# which is the one thing a "pull and run" image must never do. Skipping it only disables the
+# expansion stage, so this stays cheap insurance in slim builds too.
+RUN python bake_expander.py
 
 # Bake the super-resolution weights (BSD-3, ~64MB). Tries a mirror first because the
 # upstream GitHub release asset is unreliable from CI, and it is never allowed to fail the

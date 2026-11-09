@@ -83,6 +83,25 @@ window: `HF_TOKEN` lifts the Hub's anonymous rate limit, and `hf-transfer` (in r
 downloads many chunks at once instead of one file at a time. If hf_transfer errors, the
 download retries on the plain client rather than failing the boot.
 
+### Nothing is fetched at runtime
+
+The deployment contract is "pull the image, run it", so every artifact the worker needs is in
+the image or on the volume:
+
+| Artifact | Where it comes from |
+|---|---|
+| FLUX.2 klein weights | baked (`BAKE_WEIGHTS=1`) or a mounted volume |
+| prompt-expansion LM (~3GB) | baked unconditionally — see below |
+| upscaler (~64MB) | baked |
+| CTA font | bundled in `fonts/` |
+
+The expander's weights used to be fetched lazily from the Hub on first use, which put a 3GB
+download inside a customer request — and the `HF_HUB_OFFLINE` guard did not stop it:
+`huggingface_hub` reads that variable into `constants` at import time, and `handler` imports
+diffusers long before the weights resolve, so setting the env var later was inert. Both are
+fixed: the build bakes those weights, `expander._load` insists on `local_files_only=True`, and
+`_go_offline()` sets the env var *and* the constant.
+
 `HF_HUB_OFFLINE` is set by the handler **after** the weights resolve, so a baked worker never
 touches the network while a volume-backed one still can.
 
@@ -120,6 +139,7 @@ a warm process to snapshot; without it every cold start pays the full load.
 | `IMOTAN_DTYPE` | `int8` | `bf16` forces the unquantised path without a rebuild |
 | `IMOTAN_EXPAND` | *(off)* | `1` enables the prompt-expansion stage |
 | `IMOTAN_EXPAND_MODEL` | `Qwen/Qwen2.5-1.5B-Instruct` | expander weights; int8 loaded on first use |
+| `IMOTAN_EXPAND_PATH` | `/models/expander` | where the build baked those weights; loaded with `local_files_only=True` |
 | `IMOTAN_BEST_OF` | `2` | candidates per requested image, capped at 3 |
 | `IMOTAN_TEXT_BEST_OF` | `4` | candidates per image when the prompt quotes text to render; capped at 8, inside a 16-render budget |
 | `IMOTAN_FORMAT` | `jpeg` | default when the request omits `format` |
