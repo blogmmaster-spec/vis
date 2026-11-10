@@ -16,6 +16,7 @@ import time
 
 import runpod
 
+import compose
 import expander
 import ocr
 import stages
@@ -44,6 +45,12 @@ MAX_CANDIDATES = 6
 # is wider and the ranking (see `_agreement` in ocr.py) can actually prefer it.
 TEXT_BEST_OF = max(1, min(int(os.environ.get("IMOTAN_TEXT_BEST_OF", "4")), 8))
 TEXT_MAX_CANDIDATES = 16
+
+# Draw the caller's quoted string instead of asking the model to spell it. On by default:
+# the measured alternative was 0 correct out of 8 samples across two prompts. `=0` restores
+# the generate-and-verify path, which is worth keeping for comparison and for a future
+# checkpoint good enough to make it unnecessary.
+COMPOSE_TEXT = os.environ.get("IMOTAN_COMPOSE_TEXT", "1").strip().lower() not in ("0", "false", "no", "off")
 WARMUP_DIMS = (256, 256)
 
 _pipe = None
@@ -455,7 +462,20 @@ def generate_payload(body: dict) -> dict:
     elif wanted:
         expansion = {"status": "skipped", "reason": "quoted_text", "used": False}
 
-    prompt, intent = build_prompt(raw_prompt)
+    # Two ways to honour a quoted string, decided before shaping because they ask the model
+    # for different things:
+    #
+    #   composed  -- ask for artwork with no lettering, draw the string ourselves. Spelling
+    #                is then structural. Measured reason: a four-candidate run on "Get Sorted
+    #                for Free" returned coverage 0.75 on every sample, i.e. one word of four
+    #                substituted, reproducibly, and changing the quoted word did not change
+    #                the render. The quote is a hint the encoder averages, not a contract.
+    #   generated -- ask the model to draw it and verify with OCR (the old path). Kept behind
+    #                `IMOTAN_COMPOSE_TEXT=0` for comparison, and because a future checkpoint
+    #                that can actually spell deserves a fair test.
+    compose_mode = bool(wanted) and COMPOSE_TEXT
+
+    prompt, intent = build_prompt(raw_prompt, compose=compose_mode)
     if body.get("style"):
         prompt = f"{prompt}, {str(body['style']).strip()}"
 
@@ -466,10 +486,12 @@ def generate_payload(body: dict) -> dict:
     # Resolved before the budget because quoted lettering is precisely what decides how
     # many candidates to draw.
     wanted = wanted if intent == "text" else []
-    text_mode = bool(wanted)
+    text_mode = bool(wanted) and not compose_mode
 
     base_seed = int(body.get("seed") if body.get("seed") is not None else time.time_ns() % 2**31)
 
+    # Composing needs no wide pool: spelling is drawn, not sampled, so extra candidates only
+    # buy a better picture. Verifying lettering is what needed the width.
     budget = TEXT_MAX_CANDIDATES if text_mode else MAX_CANDIDATES
     cap = TEXT_BEST_OF if text_mode else BEST_OF
     per_image = max(1, min(cap, budget // count))
@@ -485,7 +507,7 @@ def generate_payload(body: dict) -> dict:
             seed = base_seed + index * 1000 + attempt
             image = _generate_one(pipe, prompt, width, height, steps, guidance, seed)
             technical = technical_score(image)
-            reading = ocr.score(image, wanted) if wanted else None
+            reading = ocr.score(image, wanted) if text_mode else None
             # Text requests are ranked mostly on the lettering, with the technical score
             # kept as a tie-break so a legible-but-smeared frame cannot win.
             score = technical if reading is None else 0.8 * reading["score"] + 0.2 * technical
@@ -506,6 +528,27 @@ def generate_payload(body: dict) -> dict:
                 stage_notes.append(f"upscale skipped: {exc}")
             except ValueError as exc:
                 stage_notes.append(f"upscale skipped: {exc}")
+
+        if compose_mode:
+            # After upscale, so the glyphs are drawn at the output resolution rather than
+            # being resampled with the artwork.
+            try:
+                best_image = compose.compose(best_image, wanted[0])
+                stages_applied.append({"stage": "compose", "text": wanted[0]})
+                if len(wanted) > 1:
+                    stage_notes.append(
+                        f"composed the first string only; ignored: {', '.join(wanted[1:])}"
+                    )
+                best_reading = {
+                    "composed": True,
+                    "expected": wanted[0],
+                    "lines": [wanted[0]],
+                    "coverage": 1.0,
+                    "extra": 0.0,
+                    "score": 1.0,
+                }
+            except Exception as exc:
+                stage_notes.append(f"compose failed: {type(exc).__name__}: {exc}")
 
         if fmt == "svg":
             try:
@@ -566,14 +609,18 @@ def generate_payload(body: dict) -> dict:
             # Whether lettering was actually verified, and against what. Callers quote the
             # strings they need rendered; this is the receipt that we checked them.
             "text_check": {
-                "enabled": bool(wanted) and ocr.available(),
+                # `composed` means the string was drawn, so it cannot be misspelt. That is a
+                # different guarantee from "an OCR pass said the model happened to get it
+                # right", and the caller is entitled to know which one it is getting.
+                "enabled": bool(wanted) and (compose_mode or ocr.available()),
+                "composed": compose_mode,
                 "expected": wanted,
                 # A bare `enabled: false` reads like a model problem and sends you looking
                 # in the wrong place. The reason is the difference between "the model cannot
                 # spell" and "opencv never imported".
                 **(
                     {"reason": ocr.reason() or "ocr unavailable"}
-                    if wanted and not ocr.available()
+                    if wanted and not compose_mode and not ocr.available()
                     else {}
                 ),
             },

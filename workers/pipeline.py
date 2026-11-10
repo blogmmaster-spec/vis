@@ -128,24 +128,48 @@ def _text_suffix(prompt: str) -> str:
     )
 
 
-def build_prompt(prompt: str) -> tuple[str, str | None]:
+# Used when the caller's string will be *drawn* rather than generated (see compose.py). The
+# model is no longer asked to letter anything: the brief becomes the artwork that will sit
+# behind the CTA, and its job is to leave room and not compete with it.
+#
+# Asking for "no text" is not the same instruction as "only this text". Measured, klein
+# treated the quoted string as a hint and substituted a more likely phrase in one slot of
+# four, reproducibly, so the string stopped being generated here at all. What the model is
+# good at -- composition, colour, lighting -- is what this suffix asks for.
+_COMPOSE_SUFFIX = (
+    "no text, no words, no lettering, no logo, no watermark, "
+    "empty uncluttered area across the lower third kept clear for a button, "
+    "bold graphic design, high contrast, clean simple background"
+)
+
+
+def _append(prompt: str, suffix: str) -> str:
+    """Add `suffix`, unless the caller already wrote its opening phrase."""
+    if suffix.split(",")[0].strip().lower() in prompt.lower():
+        return prompt
+    return f"{prompt}, {suffix}"
+
+
+def build_prompt(prompt: str, compose: bool = False) -> tuple[str, str | None]:
     """Return (shaped prompt, detected intent).
 
-    The user's text is never rewritten — only suffixed — so intent is preserved.
+    The user's text is never rewritten — only suffixed — so intent is preserved. `compose`
+    switches text intent from "render exactly this string" to "leave room for it", because
+    the caller's string is going to be drawn by `compose.py` instead of generated.
     """
     prompt = " ".join(prompt.split())
     if not prompt:
         raise ValueError("prompt is empty")
 
     intent = detect_intent(prompt)
+    if compose and intent in (None, "text"):
+        # Intent stays `text`: the caller quoted lettering, and the response should keep
+        # saying so. Only the shaping changes.
+        return _append(prompt, _COMPOSE_SUFFIX), "text"
     suffix = _text_suffix(prompt) if intent == "text" else STYLE_SUFFIX.get(intent or "")
     if not suffix:
         return prompt, intent
-    # Avoid doubling a suffix the caller already wrote.
-    if suffix.split(",")[0].strip().lower() in prompt.lower():
-        return prompt, intent
-    return f"{prompt}, {suffix}", intent
-
+    return _append(prompt, suffix), intent
 
 # ─────────────────────────────── candidate scoring ───────────────────────────
 

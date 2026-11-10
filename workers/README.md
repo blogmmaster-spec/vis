@@ -142,6 +142,7 @@ a warm process to snapshot; without it every cold start pays the full load.
 | `IMOTAN_EXPAND_PATH` | `/models/expander` | where the build baked those weights; loaded with `local_files_only=True` |
 | `IMOTAN_BEST_OF` | `2` | candidates per requested image, capped at 3 |
 | `IMOTAN_TEXT_BEST_OF` | `4` | candidates per image when the prompt quotes text to render; capped at 8, inside a 16-render budget |
+| `IMOTAN_COMPOSE_TEXT` | `1` | draw the quoted string instead of generating it; `0` restores generate-and-verify |
 | `IMOTAN_FORMAT` | `jpeg` | default when the request omits `format` |
 | `IMOTAN_QUALITY` | `90` | JPEG/WebP quality |
 | `IMOTAN_UPSCALE_MODEL` | `/models/realesrgan/RealESRGAN_x4plus.pth` | baked |
@@ -273,6 +274,26 @@ Quote every string you want rendered, and nothing else:
 ```json
 { "prompt": "A banner with a \"Get Started for Free\" button, bright energetic palette", "intent": "text" }
 ```
+
+**By default the quoted string is drawn, not generated.** The model paints the artwork; the
+CTA is set in a bundled font over the result, so the spelling comes from a font file rather
+than from a sampler. `text_check.composed: true` says that happened.
+
+Why it changed: measured, 4-step klein treats a quoted string as a hint rather than a contract.
+A run quoting "Get Sorted for Free" returned `coverage` 0.75 on all four candidates — one word
+of four substituted — and an earlier run quoting "Get Started for Free" came back reading "Get
+Sturted". Changing the quoted word did not change the render. Across eight samples on two
+prompts, zero were correct, so best-of-N was buying nothing and the pool is no longer spent on
+it: composed requests draw `IMOTAN_BEST_OF` candidates for picture quality, not sixteen for
+luck. `IMOTAN_COMPOSE_TEXT=0` restores the generate-and-verify path.
+
+What the two paths guarantee is different, and the response says which one you got:
+
+| | `composed: true` | `composed: false` |
+|---|---|---|
+| Spelling | structural — glyphs come from the font | probabilistic — OCR said it matched |
+| Placement | fixed band, plate for contrast | wherever the model put it |
+| Look | flat display type | klein's sculpted lettering |
 
 - Quoted spans are the contract. `text_check.expected` echoes them back.
 - A prompt that quotes lettering is never sent through prompt expansion. The expander is
